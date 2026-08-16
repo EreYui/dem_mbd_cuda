@@ -1,0 +1,55 @@
+#################################################################################################################
+#												           	#
+# PARAMETERS FOR THE SIMULATION OF FULL N-BODY PROBLEM (MSK UNITS)						#
+#														#
+# Note: This code was developed for simulating the motion of a bunch of irregular-shape particles   		# 
+#       viewed as an extended rigid bodies, i.e., homogenous polyhedra.						#
+#														#
+# Frames: OXYZ - World frame (inertial frame)			     						#
+#	  Bxyz - Body-fixed frame of sphere (Origin at the mass center, with three principal axes) 		#
+#														#
+################################################################################################################# 
+#
+# 1. Input filenames 
+#
+# Note: in the code, the positions and velocities of particle mass centers are represented in frame OXYZ	
+
+# 2. Solving options setting (xxx format applied)
+ODE_Option 	    = 1		# Solving option, 0: initial step checking-out; 1: do integration
+ODE_StepSize	    = 2.5e-05	# Step size of integration, unit: s
+ODE_EndStep	    = 5	# Number of steps in intervals of StepSize
+ODE_StartStep	    = 0		# Use this to change starting step numbering
+ODE_OutputInterval  = 5	# Output interval	
+
+# 3. Surface mechanical parameters
+MECH_mu        = 0.12			 # Friction coefficient 
+MECH_mu_T      = 0.012                     # Twist friction coefficient
+MECH_mu_R      = 0.012                    # Rolling friction coefficient
+
+MECH_epsN      = 0.87			 # Restitution coefficient 
+MECH_epsS      = 0.55		         # coefficient of restitution
+
+MECH_cohesive  = 0.0                     # van der waals force
+MECH_beta      = 0.55                    # Effective contact area proportional coefficient
+MECH_kN        = 4.044e6   #
+
+
+
+# Control Parameters - 控制参数
+CONTROL_GRAVITY_FLAG   = 1       # 重力标志: 0-无, 1-常重力, 2-时变重力
+CONTROL_GRAVITY_X      = 0.0     # 重力X分量 / Gravity X component
+CONTROL_GRAVITY_Y      = 0.0     # 重力Y分量 / Gravity Y component
+CONTROL_GRAVITY_Z      = -9.8    # 重力Z分量 / Gravity Z component
+CONTROL_WALL_FLAG      = 1       # 墙壁标志
+CONTROL_MULTIBODY_FLAG = 1       # 多体系统标志
+CONTROL_UNIVERSAL_GRAVITATION_FLAG = 0 # 万有引力标志
+CONTROL_PARTICLES_FILE = Data\DATA\InputFile\Particles\Particles.bt # Particles
+CONTROL_MULTIBODY_FILE = Data\DATA\InputFile\BodySet\CouplePolyFileName.csv  
+CONTROL_OUTPUT_PARTICLE_STATE = 0
+CONTROL_OUTPUT_PARTICLE_FORCE = 0
+CONTROL_OUTPUT_BODY_STATE = 0
+CONTROL_OUTPUT_BODY_FORCE = 0
+CONTROL_OUTPUT_SUMMARY = 0
+CONTROL_WALL_FILE      = Data\DATA\InputFile\Environment\Wall.bt # 墙壁数据文件 / Wall data file
+
+    

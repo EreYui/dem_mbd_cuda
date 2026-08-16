@@ -1,0 +1,94 @@
+# Build directories
+build/
+build-cuda/
+build-cuda-linux/
+cmake-build-*/
+out/
+
+# CMake generated files (for in-source or ad-hoc builds)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+
+# Visual Studio / MSBuild generated files
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.user
+*.suo
+*.opensdf
+*.sdf
+*.ipch
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.tlog
+*.lastbuildstate
+*.recipe
+
+# Compiled binaries and libraries
+*.exe
+*.dll
+*.lib
+*.exp
+*.a
+*.so
+*.dylib
+
+# Local copied datasets / backups
+# Keep the active example inputs, but exclude generated simulation outputs.
+Data/DATA/OutputFile/**
+!Data/DATA/OutputFile/**/
+!Data/DATA/OutputFile/**/.gitkeep
+Data/DATA - 副本/
+Data/DATA1
+Data/DATA2
+Data/DATA3
+Data/DATA4
+Data/DATA5
+Data/DATA6
+
+# Generated validation runs. Keep only the small, source-controlled fixtures.
+validation/*/
+!validation/cases/
+!validation/cases/**
+!validation/ctest_data1_mbd/
+!validation/ctest_data1_mbd/**
+!validation/ctest_data1_pure_dem/
+!validation/ctest_data1_pure_dem/**
+validation/ctest_data1_mbd/OutputFile/**
+validation/ctest_data1_pure_dem/OutputFile/**
+
+# Logs, temporary files, and editor metadata
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# MATLAB generated files
+*.asv
+*.m~
+Preprocess_matlab/已有的颗粒文件/
+
+# Python helper caches, if scripts are used for analysis
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# EDEM generated simulation timesteps and local logs.
+# Keep the generated initial deck and 0.h5 so the DATA case opens directly.
+Data/*/edem/*_data/[1-9]*.h5
+Data/*/edem/*.log
+Data/*/edem/*.efd

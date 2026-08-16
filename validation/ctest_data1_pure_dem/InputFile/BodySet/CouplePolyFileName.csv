@@ -1,0 +1,4 @@
+2,,,,,,,,,,,,,,,,,,,,,,,
+filepath,mass,x,y,z,vx,vy,vz,omega_x,omega_y,omega_z,lambda_x,lambda_y,lambda_z,lambda_w,I1,I2,I3,I4,I5,I6,I7,I8,I9
+Data\DATA\InputFile\BodySet\plate1.bt,1,-1.25E-01,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,1.00E+00,0.00E+00,0.00E+00,0.00E+00,1.00E+00,0,0,0,1.00E+00,0,0,0,1.00E+00
+Data\DATA\InputFile\BodySet\plate3.bt,1,1.25E-01,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,0.00E+00,1.00E+00,0.00E+00,0.00E+00,0.00E+00,1.00E+00,0,0,0,1.00E+00,0,0,0,1.00E+00

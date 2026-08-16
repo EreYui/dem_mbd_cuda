@@ -1,0 +1,3 @@
+1,,,,,,,,,,,,,,,,,,,,,,,
+filepath,mass,x,y,z,vx,vy,vz,omega_x,omega_y,omega_z,lambda_x,lambda_y,lambda_z,lambda_w,I1,I2,I3,I4,I5,I6,I7,I8,I9,state
+Data\DATA\InputFile\BodySet\triangle.bt,1000,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0

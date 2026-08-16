@@ -1,0 +1,5 @@
+# Default case directory name under Data.
+CASE_NAME=DATA
+
+# Optional explicit ParaView executable. Leave empty to use automatic search.
+PARAVIEW_EXE=C:\Program Files\ParaView 6.0.1\bin\paraview.exe
