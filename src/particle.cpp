@@ -186,6 +186,10 @@ void PARTICLE::LoadClumpComponents(const string& componentfile)
         ComponentRadius = new double[ComponentNum];
         ComponentPosBody = new vector3d[ComponentNum];
         for (int i = 0; i < Num; ++i) {
+            if (Number[i] < 0) {
+                throw runtime_error(
+                    "Default component ID requires a non-negative particle ID");
+            }
             ComponentId[i] = Number[i];
             ComponentOwner[i] = i;
             ComponentRadius[i] = Radius[i];
@@ -244,6 +248,9 @@ void PARTICLE::LoadClumpComponents(const string& componentfile)
                 "Duplicate component ID in clump-component sidecar: "
                 + to_string(componentId));
         }
+        if (componentId < 0) {
+            throw runtime_error("Clump component IDs must lie in [0, INT32_MAX]");
+        }
         if (!isfinite(radius) || radius <= 0.0
             || !isfinite(x) || !isfinite(y) || !isfinite(z)) {
             throw runtime_error(
@@ -260,6 +267,11 @@ void PARTICLE::LoadClumpComponents(const string& componentfile)
         if (ownerCounts[static_cast<size_t>(i)] == 0) {
             throw runtime_error(
                 "Every particle owner must have at least one clump component; missing owner "
+                + to_string(Number[i]));
+        }
+        if (ownerCounts[static_cast<size_t>(i)] > 8) {
+            throw runtime_error(
+                "Each particle owner may have at most 8 clump components; owner "
                 + to_string(Number[i]));
         }
     }

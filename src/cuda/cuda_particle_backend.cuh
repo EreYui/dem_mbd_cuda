@@ -53,6 +53,30 @@ struct GpuParticleArrays {
     double* displacement = nullptr;
 };
 
+struct GpuComponentArrays {
+    int n = 0;
+    int ownerCount = 0;
+    int* id = nullptr;
+    int* owner = nullptr;
+    int* ownerStart = nullptr; // [ownerCount + 1]
+    double* radius = nullptr;
+    double* bodyX = nullptr;
+    double* bodyY = nullptr;
+    double* bodyZ = nullptr;
+    double* offsetX = nullptr;
+    double* offsetY = nullptr;
+    double* offsetZ = nullptr;
+    double* x = nullptr;
+    double* y = nullptr;
+    double* z = nullptr;
+    double* vx = nullptr;
+    double* vy = nullptr;
+    double* vz = nullptr;
+    double* vhx = nullptr;
+    double* vhy = nullptr;
+    double* vhz = nullptr;
+};
+
 struct GpuWallArrays {
     int n = 0;
     double* ox = nullptr;
@@ -65,6 +89,9 @@ struct GpuWallArrays {
 
 void gpuAllocateParticles(GpuParticleArrays& d, int n);
 void gpuFreeParticles(GpuParticleArrays& d);
+void gpuAllocateComponents(GpuComponentArrays& d, int componentCount, int ownerCount);
+void gpuFreeComponents(GpuComponentArrays& d);
+void gpuUpdateComponents(GpuComponentArrays& d, const GpuParticleArrays& owners);
 void gpuAllocateWalls(GpuWallArrays& w, int n);
 void gpuFreeWalls(GpuWallArrays& w);
 void gpuClearParticleForces(GpuParticleArrays& d);

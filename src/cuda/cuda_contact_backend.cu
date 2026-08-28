@@ -76,14 +76,24 @@ __device__ DVec3 loadPosition(const GpuParticleArrays& p, int i)
     return {p.x[i], p.y[i], p.z[i]};
 }
 
-__device__ DVec3 loadVelocity(const GpuParticleArrays& p, int i)
+__device__ DVec3 loadComponentPosition(const GpuComponentArrays& c, int i)
 {
-    return {p.vx[i], p.vy[i], p.vz[i]};
+    return {c.x[i], c.y[i], c.z[i]};
 }
 
-__device__ DVec3 loadHalfStepVelocity(const GpuParticleArrays& p, int i)
+__device__ DVec3 loadComponentOffset(const GpuComponentArrays& c, int i)
 {
-    return {p.vhx[i], p.vhy[i], p.vhz[i]};
+    return {c.offsetX[i], c.offsetY[i], c.offsetZ[i]};
+}
+
+__device__ DVec3 loadComponentVelocity(const GpuComponentArrays& c, int i)
+{
+    return {c.vx[i], c.vy[i], c.vz[i]};
+}
+
+__device__ DVec3 loadComponentHalfStepVelocity(const GpuComponentArrays& c, int i)
+{
+    return {c.vhx[i], c.vhy[i], c.vhz[i]};
 }
 
 __device__ DVec3 loadAngularVelocity(const GpuParticleArrays& p, int i)
@@ -363,9 +373,9 @@ __device__ double circleTriangleArea(DVec3 center, DVec3 normal,
     return fmin(area, kPi * radius * radius);
 }
 
-__device__ double bodyTriangleAreaScale(const GpuParticleArrays& p,
+__device__ double bodyTriangleAreaScale(const GpuComponentArrays& components,
                                         const GpuTriangleArrays& triangles,
-                                        int particle, int triangle)
+                                        int component, int triangle)
 {
     const DVec3 normal = makeVec(triangles.wnx[triangle], triangles.wny[triangle],
                                  triangles.wnz[triangle]);
@@ -375,11 +385,12 @@ __device__ double bodyTriangleAreaScale(const GpuParticleArrays& p,
                             triangles.wz3[triangle]);
     const DVec3 c = makeVec(triangles.wx4[triangle], triangles.wy4[triangle],
                             triangles.wz4[triangle]);
-    const DVec3 position = loadPosition(p, particle);
+    const DVec3 position = loadComponentPosition(components, component);
     const double distance = dot(normal, sub(position, a));
     if (distance <= 0.0) return 0.0;
     const double circleRadiusSquared =
-        p.radius[particle] * p.radius[particle] - distance * distance;
+        components.radius[component] * components.radius[component]
+        - distance * distance;
     if (circleRadiusSquared <= 1.0e-30) return 0.0;
     const double circleRadius = sqrt(circleRadiusSquared);
     const DVec3 circleCenter = sub(position, mul(normal, distance));
@@ -504,30 +515,36 @@ __device__ void addComponents(double* destination, int base, DVec3 force, DVec3 
 }
 
 __device__ void particleContact(const GpuParticleArrays& p,
+                                const GpuComponentArrays& components,
                                 GpuContactHistory history,
                                 GpuForceArrays forces,
                                 const GpuMechanicalParams& mech,
-                                int i, int j, int step,
+                                int componentI, int componentJ, int step,
                                 DVec3& forceSum, DVec3& torqueSum)
 {
-    const DVec3 pi = loadPosition(p, i);
-    const DVec3 pj = loadPosition(p, j);
+    const int i = components.owner[componentI];
+    const int j = components.owner[componentJ];
+    if (i == j) return;
+    const DVec3 pi = loadComponentPosition(components, componentI);
+    const DVec3 pj = loadComponentPosition(components, componentJ);
     const DVec3 delta = sub(pj, pi);
     const double distanceSquared = normSquared(delta);
-    const double radiusSum = p.radius[i] + p.radius[j];
+    const double radiusI = components.radius[componentI];
+    const double radiusJ = components.radius[componentJ];
+    const double radiusSum = radiusI + radiusJ;
     if (distanceSquared >= radiusSum * radiusSum || distanceSquared <= 1.0e-28) return;
 
     const double distance = sqrt(distanceSquared);
     const double depth = radiusSum - distance;
     const DVec3 direction = mul(delta, 1.0 / distance);
-    const DVec3 endpointVelocityI = loadVelocity(p, i);
-    const DVec3 endpointVelocityJ = loadVelocity(p, j);
+    const DVec3 endpointVelocityI = loadComponentVelocity(components, componentI);
+    const DVec3 endpointVelocityJ = loadComponentVelocity(components, componentJ);
     const DVec3 endpointRelativeVelocity =
         sub(endpointVelocityJ, endpointVelocityI);
     const DVec3 midpointVelocityI = mech.dt > 0.0 && p.status[i] != -1
-        ? loadHalfStepVelocity(p, i) : endpointVelocityI;
+        ? loadComponentHalfStepVelocity(components, componentI) : endpointVelocityI;
     const DVec3 midpointVelocityJ = mech.dt > 0.0 && p.status[j] != -1
-        ? loadHalfStepVelocity(p, j) : endpointVelocityJ;
+        ? loadComponentHalfStepVelocity(components, componentJ) : endpointVelocityJ;
     const DVec3 midpointRelativeVelocity =
         sub(midpointVelocityJ, midpointVelocityI);
     const DVec3 endpointOmegaI = particleAngularWorld(p, i);
@@ -545,7 +562,7 @@ __device__ void particleContact(const GpuParticleArrays& p,
     const double logS = log(mech.epsS);
     const double cS = -2.0 * logS * sqrt(kS * reducedMass /
                                          (kPi*kPi + logS*logS));
-    const double effectiveRadius = p.radius[i] * p.radius[j] / radiusSum;
+    const double effectiveRadius = radiusI * radiusJ / radiusSum;
     const double betaRadiusSquared = mech.beta * effectiveRadius * mech.beta * effectiveRadius;
     const double kT = 2.0 * kS * betaRadiusSquared;
     const double cT = 2.0 * cS * betaRadiusSquared;
@@ -558,17 +575,17 @@ __device__ void particleContact(const GpuParticleArrays& p,
                       mul(direction, mech.cohesion * 4.0 * betaRadiusSquared));
 
     const std::uint64_t key = static_cast<std::uint64_t>(
-        static_cast<std::uint32_t>(p.id[j])) + 1ull;
+        static_cast<std::uint32_t>(components.id[componentJ])) + 1ull;
     const int slot = acquireHistorySlot(history.particleKeys,
                                         history.particleLastSeen,
                                         history.particleValues,
-                                        i, key, step,
+                                        componentI, key, step,
                                         kGpuParticleHistorySlots,
                                         forces.particleHistoryOverflowCount,
                                         forces.particleHistoryHighWater);
     if (slot < 0) return;
 
-    const double li = (p.radius[i]*p.radius[i] - p.radius[j]*p.radius[j] +
+    const double li = (radiusI*radiusI - radiusJ*radiusJ +
                        distanceSquared) / (2.0 * distance);
     const double lj = distance - li;
     DVec3 endpointTangentialVelocity = sub(
@@ -615,21 +632,28 @@ __device__ void particleContact(const GpuParticleArrays& p,
         mech.muR * momentScale,
         history.particleValues, slot, 0);
 
-    forceSum = add(forceSum, add(normalForce, friction));
-    torqueSum = add(torqueSum,
-                    add(add(twist, roll), mul(cross(direction, friction), li)));
+    const DVec3 contactForce = add(normalForce, friction);
+    const DVec3 componentCouple =
+        add(add(twist, roll), mul(cross(direction, friction), li));
+    forceSum = add(forceSum, contactForce);
+    torqueSum = add(
+        torqueSum,
+        add(componentCouple,
+            cross(loadComponentOffset(components, componentI), contactForce)));
     atomicAdd(forces.particleContactCount, 1);
 }
 
 __device__ void bodyContact(const GpuParticleArrays& p,
+                            const GpuComponentArrays& components,
                             const GpuBodyStateArrays& bodies,
                             const GpuTriangleArrays& triangles,
                             GpuContactHistory history,
                             GpuForceArrays forces,
                             const GpuMechanicalParams& mech,
-                            int particle, int triangle, int historySlot,
+                            int component, int triangle, int historySlot,
                             DVec3& forceSum, DVec3& torqueSum)
 {
+    const int particle = components.owner[component];
     const int body = triangles.bodyId[triangle];
     DVec3 normal = makeVec(triangles.wnx[triangle], triangles.wny[triangle],
                            triangles.wnz[triangle]);
@@ -639,12 +663,13 @@ __device__ void bodyContact(const GpuParticleArrays& p,
                             triangles.wz3[triangle]);
     const DVec3 c = makeVec(triangles.wx4[triangle], triangles.wy4[triangle],
                             triangles.wz4[triangle]);
-    const DVec3 position = loadPosition(p, particle);
+    const DVec3 position = loadComponentPosition(components, component);
     const double distance = dot(normal, sub(position, a));
     if (distance <= 0.0) return;
-    const double depth = p.radius[particle] - distance;
+    const double depth = components.radius[component] - distance;
     if (depth <= 0.0) return;
-    const double circleRadiusSquared = p.radius[particle]*p.radius[particle] -
+    const double circleRadiusSquared = components.radius[component]
+                                       * components.radius[component] -
                                        distance*distance;
     if (circleRadiusSquared <= 1.0e-30) return;
     const double circleRadius = sqrt(circleRadiusSquared);
@@ -666,7 +691,8 @@ __device__ void bodyContact(const GpuParticleArrays& p,
     const DVec3 omegaBody = bodyAngularWorld(bodies, body);
     const DVec3 bodyVelocity = add(makeVec(bodies.vx[body], bodies.vy[body],
                                            bodies.vz[body]), cross(omegaBody, arm));
-    const DVec3 relativeVelocity = sub(bodyVelocity, loadVelocity(p, particle));
+    const DVec3 relativeVelocity =
+        sub(bodyVelocity, loadComponentVelocity(components, component));
 
     const double kS = 2.0 * mech.kN / 7.0;
     const double reducedMass = p.mass[particle];
@@ -676,7 +702,7 @@ __device__ void bodyContact(const GpuParticleArrays& p,
     const double logS = log(mech.epsS);
     const double cS = -2.0 * logS * sqrt(kS * reducedMass /
                                          (kPi*kPi + logS*logS));
-    const double radius = p.radius[particle];
+    const double radius = components.radius[component];
     const double betaRadiusSquared = mech.beta * radius * mech.beta * radius;
     const double kT = 2.0 * kS * betaRadiusSquared;
     const double cT = 2.0 * cS * betaRadiusSquared;
@@ -720,8 +746,11 @@ __device__ void bodyContact(const GpuParticleArrays& p,
 
     const DVec3 particleForce = mul(add(normalForce, friction), areaScale);
     const DVec3 contactMoment = add(twist, roll);
-    const DVec3 particleTorque = mul(
+    const DVec3 componentCouple = mul(
         add(contactMoment, mul(cross(normal, friction), distance)), areaScale);
+    const DVec3 particleTorque = add(
+        componentCouple,
+        cross(loadComponentOffset(components, component), particleForce));
     const DVec3 bodyNormalForce = mul(normalForce, -areaScale);
     const DVec3 bodyFriction = mul(friction, -areaScale);
     const DVec3 bodyNormalTorque = mul(cross(arm, normalForce), -areaScale);
@@ -762,15 +791,17 @@ __device__ void bodyContact(const GpuParticleArrays& p,
 }
 
 __device__ int advanceBodyManifoldHistory(
-    const GpuParticleArrays& p, const GpuBodyStateArrays& bodies,
+    const GpuParticleArrays& p, const GpuComponentArrays& components,
+    const GpuBodyStateArrays& bodies,
     GpuContactHistory history, GpuForceArrays forces,
-    const GpuMechanicalParams& mech, int particle, int body, int step,
+    const GpuMechanicalParams& mech, int component, int body, int step,
     DVec3 normal, DVec3 circleCenter, double distance)
 {
+    const int particle = components.owner[component];
     const std::uint64_t key = static_cast<std::uint64_t>(body + 1);
     const int slot = acquireHistorySlot(
         history.bodyKeys, history.bodyLastSeen, history.bodyValues,
-        particle, key, step, kGpuBodyHistorySlots,
+        component, key, step, kGpuBodyHistorySlots,
         forces.bodyHistoryOverflowCount, forces.bodyHistoryHighWater);
     if (slot < 0) return -1;
 
@@ -786,9 +817,10 @@ __device__ int advanceBodyManifoldHistory(
     const DVec3 bodyVelocity =
         add(makeVec(bodies.vx[body], bodies.vy[body], bodies.vz[body]),
             cross(omegaBody, arm));
-    const DVec3 endpointParticleVelocity = loadVelocity(p, particle);
+    const DVec3 endpointParticleVelocity =
+        loadComponentVelocity(components, component);
     const DVec3 midpointParticleVelocity = dynamicPhysicalStep
-        ? loadHalfStepVelocity(p, particle)
+        ? loadComponentHalfStepVelocity(components, component)
         : endpointParticleVelocity;
     const DVec3 endpointRelativeVelocity =
         sub(bodyVelocity, endpointParticleVelocity);
@@ -802,7 +834,7 @@ __device__ int advanceBodyManifoldHistory(
     const double logS = log(mech.epsS);
     const double cS = -2.0 * logS * sqrt(
         kS * reducedMass / (kPi*kPi + logS*logS));
-    const double radius = p.radius[particle];
+    const double radius = components.radius[component];
     const double betaRadiusSquared =
         mech.beta * radius * mech.beta * radius;
     const double kT = 2.0 * kS * betaRadiusSquared;
@@ -875,31 +907,33 @@ __device__ DVec3 wallHistoryResponse(DVec3 rate, double stiffness,
 }
 
 __device__ void wallContact(const GpuParticleArrays& p,
+                            const GpuComponentArrays& components,
                             const GpuWallArrays& walls,
                             GpuContactHistory history,
                             GpuForceArrays forces,
                             const GpuMechanicalParams& mech,
-                            int particle, int wall, int step,
+                            int component, int wall, int step,
                             DVec3& forceSum, DVec3& torqueSum)
 {
+    const int particle = components.owner[component];
     const DVec3 outward = makeVec(walls.nx[wall], walls.ny[wall], walls.nz[wall]);
     const DVec3 normal = mul(outward, -1.0);
     const DVec3 origin = makeVec(walls.ox[wall], walls.oy[wall], walls.oz[wall]);
-    const DVec3 position = loadPosition(p, particle);
+    const DVec3 position = loadComponentPosition(components, component);
     const double distance = dot(sub(position, origin), outward);
-    const double depth = p.radius[particle] - distance;
+    const double depth = components.radius[component] - distance;
     if (depth <= 0.0) return;
 
     const std::uint64_t key = static_cast<std::uint64_t>(wall) + 1ull;
     const int slot = acquireHistorySlot(
         history.wallKeys, history.wallLastSeen, history.wallValues,
-        particle, key, step, kGpuWallHistorySlots,
+        component, key, step, kGpuWallHistorySlots,
         forces.bodyHistoryOverflowCount, forces.bodyHistoryHighWater);
     if (slot < 0) return;
 
-    const double radius = p.radius[particle];
+    const double radius = components.radius[component];
     const double lever = radius - depth;
-    const DVec3 velocity = loadVelocity(p, particle);
+    const DVec3 velocity = loadComponentVelocity(components, component);
     const DVec3 omega = particleAngularWorld(p, particle);
     const DVec3 relativeVelocity = mul(velocity, -1.0);
     DVec3 tangentialVelocity = sub(
@@ -952,13 +986,18 @@ __device__ void wallContact(const GpuParticleArrays& p,
         mech.muR * momentScale,
         true, true, history.wallValues, slot, 0);
 
-    forceSum = add(forceSum, add(normalForce, friction));
-    torqueSum = add(torqueSum,
-                    add(add(twist, roll),
-                        mul(cross(normal, friction), lever)));
+    const DVec3 contactForce = add(normalForce, friction);
+    const DVec3 componentCouple =
+        add(add(twist, roll), mul(cross(normal, friction), lever));
+    forceSum = add(forceSum, contactForce);
+    torqueSum = add(
+        torqueSum,
+        add(componentCouple,
+            cross(loadComponentOffset(components, component), contactForce)));
 }
 
 __global__ void computeContactsKernel(GpuParticleArrays p,
+                                      GpuComponentArrays components,
                                       GpuGridArrays particleGrid,
                                       GpuWallArrays walls,
                                       GpuBodyStateArrays bodies,
@@ -973,12 +1012,6 @@ __global__ void computeContactsKernel(GpuParticleArrays p,
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= p.n) return;
-    expireHistory(history.particleKeys, history.particleLastSeen,
-                  history.particleValues, i, step, kGpuParticleHistorySlots);
-    expireHistory(history.wallKeys, history.wallLastSeen,
-                  history.wallValues, i, step, kGpuWallHistorySlots);
-    expireHistory(history.bodyKeys, history.bodyLastSeen,
-                  history.bodyValues, i, step, kGpuBodyHistorySlots);
 
     DVec3 contactForce = makeVec(0.0, 0.0, 0.0);
     DVec3 contactTorque = makeVec(0.0, 0.0, 0.0);
@@ -1005,41 +1038,53 @@ __global__ void computeContactsKernel(GpuParticleArrays p,
             }
         }
     }
-    for (int w = 0; w < walls.n; ++w) {
-        wallContact(p, walls, history, forces, wallMech, i, w, step,
-                    wallForce, wallTorque);
-    }
+    for (int component = components.ownerStart[i];
+         component < components.ownerStart[i + 1]; ++component) {
+        expireHistory(history.particleKeys, history.particleLastSeen,
+                      history.particleValues, component, step,
+                      kGpuParticleHistorySlots);
+        expireHistory(history.wallKeys, history.wallLastSeen,
+                      history.wallValues, component, step,
+                      kGpuWallHistorySlots);
+        expireHistory(history.bodyKeys, history.bodyLastSeen,
+                      history.bodyValues, component, step,
+                      kGpuBodyHistorySlots);
 
-    const DVec3 position = loadPosition(p, i);
-    const int ix = static_cast<int>(floor(position.x * particleGrid.invMeshSize));
-    const int iy = static_cast<int>(floor(position.y * particleGrid.invMeshSize));
-    const int iz = static_cast<int>(floor(position.z * particleGrid.invMeshSize));
-    for (int dx = -1; dx <= 1; ++dx) {
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dz = -1; dz <= 1; ++dz) {
-                const std::uint64_t key = packCell(ix+dx, iy+dy, iz+dz);
-                const int begin = lowerBound(particleGrid.sortedCellKey,
-                                             particleGrid.n, key);
-                const int end = upperBound(particleGrid.sortedCellKey,
-                                           particleGrid.n, key);
-                for (int entry = begin; entry < end; ++entry) {
-                    const int j = particleGrid.sortedParticleId[entry];
-                    if (j != i) {
-                        particleContact(p, history, forces, particleMech,
-                                        i, j, step,
-                                        contactForce, contactTorque);
+        for (int w = 0; w < walls.n; ++w) {
+            wallContact(p, components, walls, history, forces, wallMech,
+                        component, w, step, wallForce, wallTorque);
+        }
+
+        const DVec3 position = loadComponentPosition(components, component);
+        const int ix = static_cast<int>(floor(position.x * particleGrid.invMeshSize));
+        const int iy = static_cast<int>(floor(position.y * particleGrid.invMeshSize));
+        const int iz = static_cast<int>(floor(position.z * particleGrid.invMeshSize));
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    const std::uint64_t key = packCell(ix+dx, iy+dy, iz+dz);
+                    const int begin = lowerBound(particleGrid.sortedCellKey,
+                                                 particleGrid.n, key);
+                    const int end = upperBound(particleGrid.sortedCellKey,
+                                               particleGrid.n, key);
+                    for (int entry = begin; entry < end; ++entry) {
+                        const int other = particleGrid.sortedEntityId[entry];
+                        if (components.owner[other] != i) {
+                            particleContact(
+                                p, components, history, forces, particleMech,
+                                component, other, step, contactForce, contactTorque);
+                        }
                     }
                 }
             }
         }
-    }
 
-    if (triangles.n > 0 && triangleGrid.entryCount > 0) {
+        if (triangles.n <= 0 || triangleGrid.entryCount <= 0) continue;
         const std::uint64_t key = packCell(ix, iy, iz);
-        const int begin = lowerBound(triangleGrid.sortedCellKey,
-                                     triangleGrid.entryCount, key);
-        const int end = upperBound(triangleGrid.sortedCellKey,
-                                   triangleGrid.entryCount, key);
+        const int begin = lowerBound(
+            triangleGrid.sortedCellKey, triangleGrid.entryCount, key);
+        const int end = upperBound(
+            triangleGrid.sortedCellKey, triangleGrid.entryCount, key);
         for (int body = 0; body < bodies.n; ++body) {
             double totalAreaScale = 0.0;
             DVec3 weightedNormal = makeVec(0.0, 0.0, 0.0);
@@ -1048,48 +1093,43 @@ __global__ void computeContactsKernel(GpuParticleArrays p,
             for (int entry = begin; entry < end; ++entry) {
                 const int triangle = triangleGrid.sortedTriangleId[entry];
                 if (triangles.bodyId[triangle] != body) continue;
-                const double areaScale =
-                    bodyTriangleAreaScale(p, triangles, i, triangle);
+                const double areaScale = bodyTriangleAreaScale(
+                    components, triangles, component, triangle);
                 if (areaScale <= 0.0) continue;
-                const DVec3 outward =
-                    makeVec(triangles.wnx[triangle], triangles.wny[triangle],
-                            triangles.wnz[triangle]);
-                const DVec3 a =
-                    makeVec(triangles.wx2[triangle], triangles.wy2[triangle],
-                            triangles.wz2[triangle]);
-                const double distance =
-                    dot(outward, sub(position, a));
-                const DVec3 circleCenter =
-                    sub(position, mul(outward, distance));
+                const DVec3 outward = makeVec(
+                    triangles.wnx[triangle], triangles.wny[triangle],
+                    triangles.wnz[triangle]);
+                const DVec3 a = makeVec(
+                    triangles.wx2[triangle], triangles.wy2[triangle],
+                    triangles.wz2[triangle]);
+                const double distance = dot(outward, sub(position, a));
+                const DVec3 circleCenter = sub(position, mul(outward, distance));
                 totalAreaScale += areaScale;
-                weightedNormal =
-                    add(weightedNormal, mul(outward, -areaScale));
-                weightedCircleCenter =
-                    add(weightedCircleCenter, mul(circleCenter, areaScale));
+                weightedNormal = add(weightedNormal, mul(outward, -areaScale));
+                weightedCircleCenter = add(
+                    weightedCircleCenter, mul(circleCenter, areaScale));
                 weightedDistance += distance * areaScale;
             }
             if (totalAreaScale <= 0.0) continue;
             const DVec3 manifoldNormal = normalized(weightedNormal);
             const DVec3 manifoldCircleCenter =
                 mul(weightedCircleCenter, 1.0 / totalAreaScale);
-            const double manifoldDistance =
-                weightedDistance / totalAreaScale;
+            const double manifoldDistance = weightedDistance / totalAreaScale;
             const int historySlot = advanceBodyManifoldHistory(
-                p, bodies, history, forces, bodyMech, i, body, step,
-                manifoldNormal, manifoldCircleCenter, manifoldDistance);
+                p, components, bodies, history, forces, bodyMech,
+                component, body, step, manifoldNormal,
+                manifoldCircleCenter, manifoldDistance);
             if (historySlot < 0) continue;
 
-            // Advance the area-weighted contact manifold exactly once. Every
-            // overlapping facet then reads that state without adding another
-            // timestep, removing tessellation-dependent history increments.
             GpuMechanicalParams readOnlyBodyMech = bodyMech;
             readOnlyBodyMech.dt = 0.0;
             for (int entry = begin; entry < end; ++entry) {
                 const int triangle = triangleGrid.sortedTriangleId[entry];
                 if (triangles.bodyId[triangle] != body) continue;
-                bodyContact(p, bodies, triangles, history, forces,
-                            readOnlyBodyMech, i, triangle, historySlot,
-                            bodyForce, bodyTorque);
+                bodyContact(
+                    p, components, bodies, triangles, history, forces,
+                    readOnlyBodyMech, component, triangle, historySlot,
+                    bodyForce, bodyTorque);
             }
         }
     }
@@ -1308,6 +1348,7 @@ void gpuClearForces(GpuForceArrays& forces)
 }
 
 void gpuComputeContacts(const GpuParticleArrays& particles,
+                        const GpuComponentArrays& components,
                         const GpuGridArrays& particleGrid,
                         const GpuWallArrays& walls,
                         const GpuBodyStateArrays& bodies,
@@ -1322,7 +1363,7 @@ void gpuComputeContacts(const GpuParticleArrays& particles,
 {
     if (particles.n <= 0) return;
     computeContactsKernel<<<blocks(particles.n), 256>>>(
-        particles, particleGrid, walls, bodies, triangles, triangleGrid,
+        particles, components, particleGrid, walls, bodies, triangles, triangleGrid,
         history, forces, particleMech, bodyMech, wallMech, stepIndex);
     checkCuda(cudaGetLastError(), "computeContactsKernel");
 }

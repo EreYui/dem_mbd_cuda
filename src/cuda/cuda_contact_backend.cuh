@@ -87,6 +87,7 @@ void gpuBuildTriangleGrid(GpuTriangleGrid& grid, const GpuTriangleArrays& triang
                           double meshSize, double padding);
 void gpuClearForces(GpuForceArrays& forces);
 void gpuComputeContacts(const GpuParticleArrays& particles,
+                        const GpuComponentArrays& components,
                         const GpuGridArrays& particleGrid,
                         const GpuWallArrays& walls,
                         const GpuBodyStateArrays& bodies,

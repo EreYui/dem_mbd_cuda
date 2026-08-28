@@ -89,6 +89,22 @@ int main()
         write(badComponents, "101 31 0.08 0 0 0\n101 47 0.20 0 0 0\n");
         require(rejects(particles, badComponents, false),
                 "duplicate component ID did not fail closed");
+
+        const fs::path negativeComponent = directory / "negative_component.bt";
+        write(negativeComponent, "-1 31 0.08 0 0 0\n201 47 0.20 0 0 0\n");
+        require(rejects(particles, negativeComponent, false),
+                "negative component ID did not fail closed");
+
+        const fs::path crowdedComponents = directory / "crowded_components.bt";
+        write(
+            crowdedComponents,
+            "100 31 0.01 0 0 0\n101 31 0.01 0 0 0\n"
+            "102 31 0.01 0 0 0\n103 31 0.01 0 0 0\n"
+            "104 31 0.01 0 0 0\n105 31 0.01 0 0 0\n"
+            "106 31 0.01 0 0 0\n107 31 0.01 0 0 0\n"
+            "108 31 0.01 0 0 0\n201 47 0.20 0 0 0\n");
+        require(rejects(particles, crowdedComponents, false),
+                "component owner capacity did not fail closed");
         fs::remove_all(directory);
     }
     catch (const std::exception& error) {

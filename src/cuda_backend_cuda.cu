@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -105,6 +106,61 @@ void uploadParticles(const PARTICLE& p, GpuParticleArrays& d)
     upload(d.qz,qz.data(),n,"upload qz");
 }
 
+double uploadComponents(const PARTICLE& p, GpuComponentArrays& d)
+{
+    if (p.ComponentNum <= 0 || p.Num <= 0) {
+        throw std::runtime_error("CUDA clump topology requires owners and components");
+    }
+    std::vector<int> order(static_cast<std::size_t>(p.ComponentNum));
+    for (int i = 0; i < p.ComponentNum; ++i) order[static_cast<std::size_t>(i)] = i;
+    std::sort(order.begin(), order.end(), [&p](int first, int second) {
+        if (p.ComponentOwner[first] != p.ComponentOwner[second]) {
+            return p.ComponentOwner[first] < p.ComponentOwner[second];
+        }
+        return p.ComponentId[first] < p.ComponentId[second];
+    });
+    std::vector<int> id(p.ComponentNum), owner(p.ComponentNum);
+    std::vector<int> ownerStart(static_cast<std::size_t>(p.Num) + 1, 0);
+    std::vector<double> radius(p.ComponentNum), bodyX(p.ComponentNum),
+        bodyY(p.ComponentNum), bodyZ(p.ComponentNum);
+    double maximumRadius = 0.0;
+    for (int output = 0; output < p.ComponentNum; ++output) {
+        const int input = order[static_cast<std::size_t>(output)];
+        const int ownerRow = p.ComponentOwner[input];
+        if (ownerRow < 0 || ownerRow >= p.Num || p.ComponentId[input] < 0
+            || !std::isfinite(p.ComponentRadius[input])
+            || p.ComponentRadius[input] <= 0.0) {
+            throw std::runtime_error("invalid native clump component topology");
+        }
+        id[output] = p.ComponentId[input];
+        owner[output] = ownerRow;
+        radius[output] = p.ComponentRadius[input];
+        bodyX[output] = p.ComponentPosBody[input][0];
+        bodyY[output] = p.ComponentPosBody[input][1];
+        bodyZ[output] = p.ComponentPosBody[input][2];
+        ++ownerStart[static_cast<std::size_t>(ownerRow) + 1];
+        maximumRadius = std::max(maximumRadius, radius[output]);
+    }
+    for (int i = 1; i <= p.Num; ++i) {
+        ownerStart[static_cast<std::size_t>(i)] +=
+            ownerStart[static_cast<std::size_t>(i - 1)];
+        const int count = ownerStart[static_cast<std::size_t>(i)]
+            - ownerStart[static_cast<std::size_t>(i - 1)];
+        if (count < 1 || count > 8) {
+            throw std::runtime_error("each CUDA owner requires 1 to 8 components");
+        }
+    }
+    upload(d.id, id.data(), id.size(), "upload component ids");
+    upload(d.owner, owner.data(), owner.size(), "upload component owners");
+    upload(d.ownerStart, ownerStart.data(), ownerStart.size(),
+           "upload component owner starts");
+    upload(d.radius, radius.data(), radius.size(), "upload component radii");
+    upload(d.bodyX, bodyX.data(), bodyX.size(), "upload component body x");
+    upload(d.bodyY, bodyY.data(), bodyY.size(), "upload component body y");
+    upload(d.bodyZ, bodyZ.data(), bodyZ.size(), "upload component body z");
+    return maximumRadius;
+}
+
 void uploadWalls(const WALL& wall, GpuWallArrays& d)
 {
     const int n = wall.number;
@@ -183,10 +239,12 @@ public:
         gpuFreeTriangles(triangles);
         gpuFreeBodyStates(bodies);
         gpuFreeWalls(walls);
+        gpuFreeComponents(components);
         gpuFreeParticles(particles);
     }
 
     GpuParticleArrays particles;
+    GpuComponentArrays components;
     GpuWallArrays walls;
     GpuBodyStateArrays bodies;
     GpuTriangleArrays triangles;
@@ -228,8 +286,11 @@ void CudaDemSolver::initialize(PARTICLE& p, BODYSET* bodyset,
     const int triangleCount = bodyset ? countTriangles(*bodyset) : 0;
     gpuAllocateParticles(impl_->particles, p.Num);
     uploadParticles(p, impl_->particles);
-    gpuAllocateGrid(impl_->particleGrid, p.Num);
-    gpuAllocateContactHistory(impl_->history, p.Num);
+    gpuAllocateComponents(impl_->components, p.ComponentNum, p.Num);
+    const double maximumComponentRadius = uploadComponents(p, impl_->components);
+    gpuUpdateComponents(impl_->components, impl_->particles);
+    gpuAllocateGrid(impl_->particleGrid, p.ComponentNum);
+    gpuAllocateContactHistory(impl_->history, p.ComponentNum);
     gpuAllocateForces(impl_->forces, p.Num, bodyCount,
                       control.OutputParticleForce,
                       control.OutputBodyForce);
@@ -280,8 +341,8 @@ void CudaDemSolver::initialize(PARTICLE& p, BODYSET* bodyset,
     impl_->wallMechanical.muR=wallMech.mu_R;
     impl_->wallMechanical.kN=wallMech.kN;
     impl_->wallMechanical.dt=ode.StepSize;
-    impl_->meshSize=p.MeshSize;
-    impl_->maxRadius=p.maxRadius;
+    impl_->meshSize=2.5 * maximumComponentRadius;
+    impl_->maxRadius=maximumComponentRadius;
     impl_->initialized=true;
 }
 
@@ -293,7 +354,8 @@ void CudaDemSolver::computeForces(double, BODYSET* bodyset, double** bodyForces,
         uploadBodyStates(*bodyset, impl_->bodies);
         gpuTransformTriangles(impl_->triangles, impl_->bodies);
     }
-    gpuBuildParticleGrid(impl_->particleGrid, impl_->particles, impl_->meshSize);
+    gpuUpdateComponents(impl_->components, impl_->particles);
+    gpuBuildComponentGrid(impl_->particleGrid, impl_->components, impl_->meshSize);
     if (impl_->triangles.n > 0) {
         gpuBuildTriangleGrid(impl_->triangleGrid, impl_->triangles,
                              impl_->meshSize, impl_->maxRadius);
@@ -311,7 +373,8 @@ void CudaDemSolver::computeForces(double, BODYSET* bodyset, double** bodyForces,
         bodyMechanical.dt = 0.0;
         wallMechanical.dt = 0.0;
     }
-    gpuComputeContacts(impl_->particles, impl_->particleGrid, impl_->walls,
+    gpuComputeContacts(impl_->particles, impl_->components,
+                       impl_->particleGrid, impl_->walls,
                        impl_->bodies, impl_->triangles, impl_->triangleGrid,
                        impl_->history, impl_->forces,
                        particleMechanical, bodyMechanical, wallMechanical,

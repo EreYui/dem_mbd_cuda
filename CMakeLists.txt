@@ -105,6 +105,22 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME particle_schema_tests COMMAND particle_schema_tests)
 
+    add_executable(component_transform_tests
+        tests/component_transform_test.cu
+        src/cuda/cuda_particle_backend.cu
+    )
+    target_include_directories(component_transform_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/include"
+        "${CMAKE_SOURCE_DIR}/src"
+    )
+    target_link_libraries(component_transform_tests PRIVATE CUDA::cudart)
+    set_target_properties(component_transform_tests PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RUNTIME_LIBRARY None
+    )
+    add_test(NAME component_transform_tests COMMAND component_transform_tests)
+    set_tests_properties(component_transform_tests PROPERTIES RESOURCE_LOCK cuda_gpu)
+
     add_executable(output_compare tests/output_compare.cpp)
     target_compile_features(output_compare PRIVATE cxx_std_17)
     if(MSVC)

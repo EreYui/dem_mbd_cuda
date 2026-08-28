@@ -100,6 +100,52 @@ __global__ void accelerationKernel(GpuParticleArrays d)
     d.awz[i] = (tz - (iy - ix) * wy * wx) / iz;
 }
 
+__device__ void rotateBodyToWorld(
+    double qw, double qx, double qy, double qz,
+    double bx, double by, double bz,
+    double& wx, double& wy, double& wz)
+{
+    wx = (1.0 - 2.0*(qy*qy + qz*qz))*bx
+       + 2.0*(qx*qy - qw*qz)*by + 2.0*(qx*qz + qw*qy)*bz;
+    wy = 2.0*(qx*qy + qw*qz)*bx
+       + (1.0 - 2.0*(qx*qx + qz*qz))*by + 2.0*(qy*qz - qw*qx)*bz;
+    wz = 2.0*(qx*qz - qw*qy)*bx + 2.0*(qy*qz + qw*qx)*by
+       + (1.0 - 2.0*(qx*qx + qy*qy))*bz;
+}
+
+__global__ void updateComponentsKernel(GpuComponentArrays c, GpuParticleArrays p)
+{
+    const int component = blockIdx.x * blockDim.x + threadIdx.x;
+    if (component >= c.n) return;
+    const int owner = c.owner[component];
+    double ox, oy, oz;
+    rotateBodyToWorld(
+        p.qw[owner], p.qx[owner], p.qy[owner], p.qz[owner],
+        c.bodyX[component], c.bodyY[component], c.bodyZ[component], ox, oy, oz);
+    c.offsetX[component] = ox;
+    c.offsetY[component] = oy;
+    c.offsetZ[component] = oz;
+    c.x[component] = p.x[owner] + ox;
+    c.y[component] = p.y[owner] + oy;
+    c.z[component] = p.z[owner] + oz;
+
+    double owx, owy, owz;
+    rotateBodyToWorld(
+        p.qw[owner], p.qx[owner], p.qy[owner], p.qz[owner],
+        p.wx[owner], p.wy[owner], p.wz[owner], owx, owy, owz);
+    c.vx[component] = p.vx[owner] + owy*oz - owz*oy;
+    c.vy[component] = p.vy[owner] + owz*ox - owx*oz;
+    c.vz[component] = p.vz[owner] + owx*oy - owy*ox;
+
+    double howx, howy, howz;
+    rotateBodyToWorld(
+        p.qw[owner], p.qx[owner], p.qy[owner], p.qz[owner],
+        p.whx[owner], p.why[owner], p.whz[owner], howx, howy, howz);
+    c.vhx[component] = p.vhx[owner] + howy*oz - howz*oy;
+    c.vhy[component] = p.vhy[owner] + howz*ox - howx*oz;
+    c.vhz[component] = p.vhz[owner] + howx*oy - howy*ox;
+}
+
 __device__ void quatDerivative(
     double qw,
     double qx,
@@ -325,6 +371,67 @@ void gpuFreeParticles(GpuParticleArrays& d)
     cudaFree(d.hdqz);
     cudaFree(d.displacement);
     d = GpuParticleArrays{};
+}
+
+void gpuAllocateComponents(GpuComponentArrays& d, int componentCount, int ownerCount)
+{
+    if (componentCount <= 0 || ownerCount <= 0) {
+        throw std::runtime_error("component and owner counts must be positive");
+    }
+    d.n = componentCount;
+    d.ownerCount = ownerCount;
+    checkCuda(cudaMalloc(&d.id, sizeof(int) * componentCount),
+              "cudaMalloc(component id)");
+    checkCuda(cudaMalloc(&d.owner, sizeof(int) * componentCount),
+              "cudaMalloc(component owner)");
+    checkCuda(cudaMalloc(&d.ownerStart, sizeof(int) * (ownerCount + 1)),
+              "cudaMalloc(component owner starts)");
+    allocDouble(d.radius, componentCount);
+    allocDouble(d.bodyX, componentCount);
+    allocDouble(d.bodyY, componentCount);
+    allocDouble(d.bodyZ, componentCount);
+    allocDouble(d.offsetX, componentCount);
+    allocDouble(d.offsetY, componentCount);
+    allocDouble(d.offsetZ, componentCount);
+    allocDouble(d.x, componentCount);
+    allocDouble(d.y, componentCount);
+    allocDouble(d.z, componentCount);
+    allocDouble(d.vx, componentCount);
+    allocDouble(d.vy, componentCount);
+    allocDouble(d.vz, componentCount);
+    allocDouble(d.vhx, componentCount);
+    allocDouble(d.vhy, componentCount);
+    allocDouble(d.vhz, componentCount);
+}
+
+void gpuFreeComponents(GpuComponentArrays& d)
+{
+    cudaFree(d.id);
+    cudaFree(d.owner);
+    cudaFree(d.ownerStart);
+    cudaFree(d.radius);
+    cudaFree(d.bodyX);
+    cudaFree(d.bodyY);
+    cudaFree(d.bodyZ);
+    cudaFree(d.offsetX);
+    cudaFree(d.offsetY);
+    cudaFree(d.offsetZ);
+    cudaFree(d.x);
+    cudaFree(d.y);
+    cudaFree(d.z);
+    cudaFree(d.vx);
+    cudaFree(d.vy);
+    cudaFree(d.vz);
+    cudaFree(d.vhx);
+    cudaFree(d.vhy);
+    cudaFree(d.vhz);
+    d = GpuComponentArrays{};
+}
+
+void gpuUpdateComponents(GpuComponentArrays& d, const GpuParticleArrays& owners)
+{
+    updateComponentsKernel<<<gridSize(d.n), 256>>>(d, owners);
+    checkCuda(cudaGetLastError(), "updateComponentsKernel");
 }
 
 void gpuAllocateWalls(GpuWallArrays& w, int n)
