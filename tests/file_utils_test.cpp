@@ -6,24 +6,26 @@
 
 int main() {
     try {
-        file_utils::setCaseDirectory(file_utils::normalizePath("Data/DATA1"));
+        file_utils::setCaseDirectory(
+            file_utils::normalizePath("validation/cases/free_fall"));
         // Deliberately use legacy Windows separators. This must also resolve
         // on Ubuntu when CTest runs with the project root as working directory.
         const auto existingPath = file_utils::requireInputFile(
             "Data\\DATA\\InputFile\\SettingData\\world.par",
             "cross-platform path test");
         if (existingPath.generic_string()
-            != "Data/DATA1/InputFile/SettingData/world.par") {
+            != "validation/cases/free_fall/InputFile/SettingData/world.par") {
             std::cerr << "unexpected normalized path: "
                       << existingPath.generic_string() << '\n';
             return EXIT_FAILURE;
         }
 
-        file_utils::setCaseDirectory(file_utils::normalizePath("Data/DATA7"));
+        file_utils::setCaseDirectory(
+            file_utils::normalizePath("validation/cases/body_states"));
         const auto redirectedLegacyPath = file_utils::resolveCasePath(
             "Data\\DATA\\InputFile\\Particles\\Particles.bt");
         if (redirectedLegacyPath.generic_string()
-            != "Data/DATA7/InputFile/Particles/Particles.bt") {
+            != "validation/cases/body_states/InputFile/Particles/Particles.bt") {
             std::cerr << "legacy case path was not redirected: "
                       << redirectedLegacyPath.generic_string() << '\n';
             return EXIT_FAILURE;
@@ -31,12 +33,13 @@ int main() {
         const auto caseRelativePath = file_utils::resolveCasePath(
             "OutputFile/state_particles/ph.00001.bt");
         if (caseRelativePath.generic_string()
-            != "Data/DATA7/OutputFile/state_particles/ph.00001.bt") {
+            != "validation/cases/body_states/OutputFile/state_particles/ph.00001.bt") {
             std::cerr << "case-relative path was not resolved: "
                       << caseRelativePath.generic_string() << '\n';
             return EXIT_FAILURE;
         }
-        file_utils::setCaseDirectory(file_utils::normalizePath("Data/DATA1"));
+        file_utils::setCaseDirectory(
+            file_utils::normalizePath("validation/cases/free_fall"));
 
         bool missingFileReported = false;
         try {
