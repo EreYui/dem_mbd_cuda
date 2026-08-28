@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -106,7 +107,18 @@ void uploadParticles(const PARTICLE& p, GpuParticleArrays& d)
     upload(d.qz,qz.data(),n,"upload qz");
 }
 
-double uploadComponents(const PARTICLE& p, GpuComponentArrays& d)
+struct ComponentMetadata {
+    double maximumRadius = 0.0;
+    std::vector<int> componentIds;
+    std::vector<int> ownerIds;
+    std::vector<double> radii;
+    std::vector<double> bodyX;
+    std::vector<double> bodyY;
+    std::vector<double> bodyZ;
+    bool legacySphereTopology = false;
+};
+
+ComponentMetadata uploadComponents(const PARTICLE& p, GpuComponentArrays& d)
 {
     if (p.ComponentNum <= 0 || p.Num <= 0) {
         throw std::runtime_error("CUDA clump topology requires owners and components");
@@ -119,7 +131,7 @@ double uploadComponents(const PARTICLE& p, GpuComponentArrays& d)
         }
         return p.ComponentId[first] < p.ComponentId[second];
     });
-    std::vector<int> id(p.ComponentNum), owner(p.ComponentNum);
+    std::vector<int> id(p.ComponentNum), owner(p.ComponentNum), ownerId(p.ComponentNum);
     std::vector<int> ownerStart(static_cast<std::size_t>(p.Num) + 1, 0);
     std::vector<double> radius(p.ComponentNum), bodyX(p.ComponentNum),
         bodyY(p.ComponentNum), bodyZ(p.ComponentNum);
@@ -134,6 +146,7 @@ double uploadComponents(const PARTICLE& p, GpuComponentArrays& d)
         }
         id[output] = p.ComponentId[input];
         owner[output] = ownerRow;
+        ownerId[output] = p.Number[ownerRow];
         radius[output] = p.ComponentRadius[input];
         bodyX[output] = p.ComponentPosBody[input][0];
         bodyY[output] = p.ComponentPosBody[input][1];
@@ -158,7 +171,22 @@ double uploadComponents(const PARTICLE& p, GpuComponentArrays& d)
     upload(d.bodyX, bodyX.data(), bodyX.size(), "upload component body x");
     upload(d.bodyY, bodyY.data(), bodyY.size(), "upload component body y");
     upload(d.bodyZ, bodyZ.data(), bodyZ.size(), "upload component body z");
-    return maximumRadius;
+    bool legacySphere = p.ComponentNum == p.Num;
+    for (int i = 0; i < p.ComponentNum && legacySphere; ++i) {
+        legacySphere = owner[i] == i && id[i] == p.Number[i]
+            && radius[i] == p.Radius[i]
+            && bodyX[i] == 0.0 && bodyY[i] == 0.0 && bodyZ[i] == 0.0;
+    }
+    return {
+        maximumRadius,
+        std::move(id),
+        std::move(ownerId),
+        std::move(radius),
+        std::move(bodyX),
+        std::move(bodyY),
+        std::move(bodyZ),
+        legacySphere,
+    };
 }
 
 void uploadWalls(const WALL& wall, GpuWallArrays& d)
@@ -262,6 +290,9 @@ public:
     std::vector<double> bodyMasses;
     CudaStepStats cachedStats;
     std::size_t freeMemoryBeforeAllocations = 0;
+    ComponentMetadata componentMetadata;
+    std::vector<int> ownerIds;
+    bool restoredParticleLeapfrogState = false;
 };
 
 CudaDemSolver::CudaDemSolver() : impl_(new Impl) {}
@@ -287,7 +318,9 @@ void CudaDemSolver::initialize(PARTICLE& p, BODYSET* bodyset,
     gpuAllocateParticles(impl_->particles, p.Num);
     uploadParticles(p, impl_->particles);
     gpuAllocateComponents(impl_->components, p.ComponentNum, p.Num);
-    const double maximumComponentRadius = uploadComponents(p, impl_->components);
+    impl_->componentMetadata = uploadComponents(p, impl_->components);
+    const double maximumComponentRadius = impl_->componentMetadata.maximumRadius;
+    impl_->ownerIds.assign(p.Number, p.Number + p.Num);
     gpuUpdateComponents(impl_->components, impl_->particles);
     gpuAllocateGrid(impl_->particleGrid, p.ComponentNum);
     gpuAllocateContactHistory(impl_->history, p.ComponentNum);
@@ -481,21 +514,82 @@ void CudaDemSolver::saveContactHistory(const std::string& filename) const
     download(bodyValues.data(), impl_->history.bodyValues, bodyValues.size(),
              "download body history values");
 
+    const int ownerCount = impl_->particles.n;
+    const auto stateField = [this, ownerCount](const double* source, const char* what) {
+        std::vector<double> values(static_cast<std::size_t>(ownerCount));
+        download(values.data(), source, values.size(), what);
+        return values;
+    };
+    const auto x = stateField(impl_->particles.x, "checkpoint x");
+    const auto y = stateField(impl_->particles.y, "checkpoint y");
+    const auto z = stateField(impl_->particles.z, "checkpoint z");
+    const auto vx = stateField(impl_->particles.vx, "checkpoint vx");
+    const auto vy = stateField(impl_->particles.vy, "checkpoint vy");
+    const auto vz = stateField(impl_->particles.vz, "checkpoint vz");
+    const auto qw = stateField(impl_->particles.qw, "checkpoint qw");
+    const auto qx = stateField(impl_->particles.qx, "checkpoint qx");
+    const auto qy = stateField(impl_->particles.qy, "checkpoint qy");
+    const auto qz = stateField(impl_->particles.qz, "checkpoint qz");
+    const auto wx = stateField(impl_->particles.wx, "checkpoint wx");
+    const auto wy = stateField(impl_->particles.wy, "checkpoint wy");
+    const auto wz = stateField(impl_->particles.wz, "checkpoint wz");
+    const auto vhx = stateField(impl_->particles.vhx, "checkpoint vhx");
+    const auto vhy = stateField(impl_->particles.vhy, "checkpoint vhy");
+    const auto vhz = stateField(impl_->particles.vhz, "checkpoint vhz");
+    const auto whx = stateField(impl_->particles.whx, "checkpoint whx");
+    const auto why = stateField(impl_->particles.why, "checkpoint why");
+    const auto whz = stateField(impl_->particles.whz, "checkpoint whz");
+    const auto hdqw = stateField(impl_->particles.hdqw, "checkpoint hdqw");
+    const auto hdqx = stateField(impl_->particles.hdqx, "checkpoint hdqx");
+    const auto hdqy = stateField(impl_->particles.hdqy, "checkpoint hdqy");
+    const auto hdqz = stateField(impl_->particles.hdqz, "checkpoint hdqz");
+
     std::ofstream output(filename, std::ios::binary | std::ios::trunc);
     if (!output) throw std::runtime_error("cannot create CUDA contact-history checkpoint: " + filename);
-    const std::array<char, 8> magic{{'D','M','H','I','S','T','1','\0'}};
-    const std::uint32_t version = 1;
-    const std::uint32_t particleCount = static_cast<std::uint32_t>(impl_->history.particleCount);
+    const std::array<char, 8> magic{{'D','M','H','I','S','T','2','\0'}};
+    const std::uint32_t version = 2;
+    const std::uint32_t endianMarker = 0x01020304u;
+    const std::uint32_t ownerCount32 = static_cast<std::uint32_t>(ownerCount);
+    const std::uint32_t componentCount =
+        static_cast<std::uint32_t>(impl_->history.particleCount);
     const std::array<std::uint32_t, 3> slotCounts{{
         kGpuParticleHistorySlots, kGpuWallHistorySlots, kGpuBodyHistorySlots}};
+    const std::uint32_t topologyRecordSize =
+        2u * sizeof(std::int32_t) + 4u * sizeof(double);
+    const std::uint32_t ownerStateRecordSize =
+        sizeof(std::int32_t) + 23u * sizeof(double);
     const auto write = [&output](const auto* values, std::size_t count) {
         output.write(reinterpret_cast<const char*>(values),
                      static_cast<std::streamsize>(sizeof(*values) * count));
     };
     write(magic.data(), magic.size());
     write(&version, 1);
-    write(&particleCount, 1);
+    write(&endianMarker, 1);
+    write(&ownerCount32, 1);
+    write(&componentCount, 1);
     write(slotCounts.data(), slotCounts.size());
+    write(&topologyRecordSize, 1);
+    write(&ownerStateRecordSize, 1);
+    const auto& metadata = impl_->componentMetadata;
+    for (std::size_t i = 0; i < metadata.componentIds.size(); ++i) {
+        const std::int32_t componentId = metadata.componentIds[i];
+        const std::int32_t ownerId = metadata.ownerIds[i];
+        const std::array<double, 4> geometry{{
+            metadata.radii[i], metadata.bodyX[i], metadata.bodyY[i], metadata.bodyZ[i]}};
+        write(&componentId, 1);
+        write(&ownerId, 1);
+        write(geometry.data(), geometry.size());
+    }
+    for (int i = 0; i < ownerCount; ++i) {
+        const std::int32_t ownerId = impl_->ownerIds[static_cast<std::size_t>(i)];
+        const std::array<double, 23> state{{
+            x[i], y[i], z[i], vx[i], vy[i], vz[i],
+            qw[i], qx[i], qy[i], qz[i], wx[i], wy[i], wz[i],
+            vhx[i], vhy[i], vhz[i], whx[i], why[i], whz[i],
+            hdqw[i], hdqx[i], hdqy[i], hdqz[i]}};
+        write(&ownerId, 1);
+        write(state.data(), state.size());
+    }
     write(particleKeys.data(), particleKeys.size());
     write(wallKeys.data(), wallKeys.size());
     write(bodyKeys.data(), bodyKeys.size());
@@ -519,25 +613,122 @@ void CudaDemSolver::loadContactHistory(const std::string& filename)
     };
     std::array<char, 8> magic{};
     std::uint32_t version = 0;
-    std::uint32_t particleCount = 0;
+    std::uint32_t componentCount = 0;
     std::array<std::uint32_t, 3> slotCounts{};
     read(magic.data(), magic.size());
     read(&version, 1);
-    read(&particleCount, 1);
-    read(slotCounts.data(), slotCounts.size());
-    const std::array<char, 8> expectedMagic{{'D','M','H','I','S','T','1','\0'}};
+    const std::array<char, 8> v1Magic{{'D','M','H','I','S','T','1','\0'}};
+    const std::array<char, 8> v2Magic{{'D','M','H','I','S','T','2','\0'}};
     const std::array<std::uint32_t, 3> expectedSlots{{
         kGpuParticleHistorySlots, kGpuWallHistorySlots, kGpuBodyHistorySlots}};
-    if (magic != expectedMagic || version != 1
-        || particleCount != static_cast<std::uint32_t>(impl_->history.particleCount)
+    impl_->restoredParticleLeapfrogState = false;
+    if (magic == v1Magic && version == 1) {
+        read(&componentCount, 1);
+        read(slotCounts.data(), slotCounts.size());
+        if (!impl_->componentMetadata.legacySphereTopology) {
+            throw std::runtime_error(
+                "legacy DMHIST1 checkpoint is forbidden for clump topology: "
+                + filename);
+        }
+    } else if (magic == v2Magic && version == 2) {
+        std::uint32_t endianMarker = 0;
+        std::uint32_t ownerCount = 0;
+        std::uint32_t topologyRecordSize = 0;
+        std::uint32_t ownerStateRecordSize = 0;
+        read(&endianMarker, 1);
+        read(&ownerCount, 1);
+        read(&componentCount, 1);
+        read(slotCounts.data(), slotCounts.size());
+        read(&topologyRecordSize, 1);
+        read(&ownerStateRecordSize, 1);
+        const std::uint32_t expectedTopologyRecordSize =
+            2u * sizeof(std::int32_t) + 4u * sizeof(double);
+        const std::uint32_t expectedOwnerStateRecordSize =
+            sizeof(std::int32_t) + 23u * sizeof(double);
+        if (endianMarker != 0x01020304u
+            || ownerCount != static_cast<std::uint32_t>(impl_->particles.n)
+            || topologyRecordSize != expectedTopologyRecordSize
+            || ownerStateRecordSize != expectedOwnerStateRecordSize) {
+            throw std::runtime_error("incompatible DMHIST2 header: " + filename);
+        }
+        const auto& metadata = impl_->componentMetadata;
+        if (componentCount != metadata.componentIds.size()) {
+            throw std::runtime_error("DMHIST2 component count mismatch: " + filename);
+        }
+        for (std::uint32_t i = 0; i < componentCount; ++i) {
+            std::int32_t componentId = 0, ownerId = 0;
+            std::array<double, 4> geometry{};
+            read(&componentId, 1);
+            read(&ownerId, 1);
+            read(geometry.data(), geometry.size());
+            if (i >= metadata.componentIds.size()
+                || componentId != metadata.componentIds[i]
+                || ownerId != metadata.ownerIds[i]
+                || geometry[0] != metadata.radii[i]
+                || geometry[1] != metadata.bodyX[i]
+                || geometry[2] != metadata.bodyY[i]
+                || geometry[3] != metadata.bodyZ[i]) {
+                throw std::runtime_error(
+                    "DMHIST2 component topology mismatch: " + filename);
+            }
+        }
+        const std::size_t n = ownerCount;
+        std::vector<double> x(n), y(n), z(n), vx(n), vy(n), vz(n);
+        std::vector<double> qw(n), qx(n), qy(n), qz(n), wx(n), wy(n), wz(n);
+        std::vector<double> vhx(n), vhy(n), vhz(n), whx(n), why(n), whz(n);
+        std::vector<double> hdqw(n), hdqx(n), hdqy(n), hdqz(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            std::int32_t ownerId = 0;
+            std::array<double, 23> state{};
+            read(&ownerId, 1);
+            read(state.data(), state.size());
+            if (ownerId != impl_->ownerIds[i]) {
+                throw std::runtime_error("DMHIST2 owner identity mismatch: " + filename);
+            }
+            x[i]=state[0]; y[i]=state[1]; z[i]=state[2];
+            vx[i]=state[3]; vy[i]=state[4]; vz[i]=state[5];
+            qw[i]=state[6]; qx[i]=state[7]; qy[i]=state[8]; qz[i]=state[9];
+            wx[i]=state[10]; wy[i]=state[11]; wz[i]=state[12];
+            vhx[i]=state[13]; vhy[i]=state[14]; vhz[i]=state[15];
+            whx[i]=state[16]; why[i]=state[17]; whz[i]=state[18];
+            hdqw[i]=state[19]; hdqx[i]=state[20]; hdqy[i]=state[21]; hdqz[i]=state[22];
+        }
+        upload(impl_->particles.x,x.data(),n,"restore x");
+        upload(impl_->particles.y,y.data(),n,"restore y");
+        upload(impl_->particles.z,z.data(),n,"restore z");
+        upload(impl_->particles.vx,vx.data(),n,"restore vx");
+        upload(impl_->particles.vy,vy.data(),n,"restore vy");
+        upload(impl_->particles.vz,vz.data(),n,"restore vz");
+        upload(impl_->particles.qw,qw.data(),n,"restore qw");
+        upload(impl_->particles.qx,qx.data(),n,"restore qx");
+        upload(impl_->particles.qy,qy.data(),n,"restore qy");
+        upload(impl_->particles.qz,qz.data(),n,"restore qz");
+        upload(impl_->particles.wx,wx.data(),n,"restore wx");
+        upload(impl_->particles.wy,wy.data(),n,"restore wy");
+        upload(impl_->particles.wz,wz.data(),n,"restore wz");
+        upload(impl_->particles.vhx,vhx.data(),n,"restore vhx");
+        upload(impl_->particles.vhy,vhy.data(),n,"restore vhy");
+        upload(impl_->particles.vhz,vhz.data(),n,"restore vhz");
+        upload(impl_->particles.whx,whx.data(),n,"restore whx");
+        upload(impl_->particles.why,why.data(),n,"restore why");
+        upload(impl_->particles.whz,whz.data(),n,"restore whz");
+        upload(impl_->particles.hdqw,hdqw.data(),n,"restore hdqw");
+        upload(impl_->particles.hdqx,hdqx.data(),n,"restore hdqx");
+        upload(impl_->particles.hdqy,hdqy.data(),n,"restore hdqy");
+        upload(impl_->particles.hdqz,hdqz.data(),n,"restore hdqz");
+        impl_->restoredParticleLeapfrogState = true;
+    } else {
+        throw std::runtime_error("unsupported contact-history checkpoint: " + filename);
+    }
+    if (componentCount != static_cast<std::uint32_t>(impl_->history.particleCount)
         || slotCounts != expectedSlots) {
         throw std::runtime_error("incompatible CUDA contact-history checkpoint: " + filename);
     }
-    const std::size_t particleSlots = static_cast<std::size_t>(particleCount)
+    const std::size_t particleSlots = static_cast<std::size_t>(componentCount)
         * kGpuParticleHistorySlots;
-    const std::size_t wallSlots = static_cast<std::size_t>(particleCount)
+    const std::size_t wallSlots = static_cast<std::size_t>(componentCount)
         * kGpuWallHistorySlots;
-    const std::size_t bodySlots = static_cast<std::size_t>(particleCount)
+    const std::size_t bodySlots = static_cast<std::size_t>(componentCount)
         * kGpuBodyHistorySlots;
     std::vector<std::uint64_t> particleKeys(particleSlots), wallKeys(wallSlots),
         bodyKeys(bodySlots);
@@ -572,6 +763,11 @@ void CudaDemSolver::loadContactHistory(const std::string& filename)
     checkCuda(cudaMemset(impl_->history.bodyLastSeen, 0xff,
                          sizeof(int) * bodySlots), "reset body history age");
     impl_->stepIndex = 0;
+}
+
+bool CudaDemSolver::hasRestoredParticleLeapfrogState() const
+{
+    return impl_->restoredParticleLeapfrogState;
 }
 
 void CudaDemSolver::downloadParticleState(PARTICLE& p) const

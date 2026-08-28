@@ -43,6 +43,7 @@ public:
     void finishParticleStep(double fullDt, double halfDt);
     void loadContactHistory(const std::string& filename);
     void saveContactHistory(const std::string& filename) const;
+    bool hasRestoredParticleLeapfrogState() const;
 
     void downloadParticleState(PARTICLE& particles) const;
     void downloadForceOutput(FORCE& force, bool particleForces = true,

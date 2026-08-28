@@ -175,7 +175,9 @@ void Simulation::IntegrateDem() {
     std::cout << "Persistent CUDA memory = "
               << solver.deviceMemoryBytes() / (1024.0 * 1024.0) << " MiB" << std::endl;
     enqueueCudaFrame(output.get(), solver, nullptr, nullptr, nullptr, -1, 0.0);
-    solver.initializeParticleHalfStep(halfDt);
+    if (!solver.hasRestoredParticleLeapfrogState()) {
+        solver.initializeParticleHalfStep(halfDt);
+    }
 
     int outputCounter = 0;
     for (int step = ode.StartStep; step < ode.EndStep; ++step) {
@@ -234,7 +236,9 @@ void Simulation::IntegrateDemMultiBody() {
     bodyImpulseStorage.clear();
     enqueueCudaFrame(
         output.get(), solver, &bodyset, bodyForces, bodyImpulses, -1, 0.0);
-    solver.initializeParticleHalfStep(halfDt);
+    if (!solver.hasRestoredParticleLeapfrogState()) {
+        solver.initializeParticleHalfStep(halfDt);
+    }
 
     DynEqnBodySet(0.0, bodyset, bodyForces, bodyAccelerations);
     for (int body = 0; body < bodyset.Num; ++body) {
