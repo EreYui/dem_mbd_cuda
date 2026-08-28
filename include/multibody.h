@@ -49,7 +49,7 @@ struct BODY {
     double sphereRadius; // bounding sphere radius
 
     std::string name;
-    // 0: force-driven; 1: fixed; 2: prescribed constant CSV velocity.
+    // 0: force-driven; 1: fixed; 2: prescribed CSV or scheduled velocity.
     int state = BODY_DYNAMIC;
     double Mass = 1.0;
     vector3d MassCenter{ 0,0,0 };
@@ -79,7 +79,7 @@ public:
             DCM[i] = Quat2DCM(body[i].orien);
         }
     }
-    void StateOutput(double time, double** force, int i);
+    void StateOutput(double time, double** force, int i, double** impulse = nullptr);
     void LoadBodys(const std::string& filename);
 
 private:

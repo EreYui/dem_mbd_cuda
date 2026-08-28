@@ -43,11 +43,15 @@ OutputFrame::OutputFrame(const PARTICLE& source, int bodyCount,
                        ? std::make_unique<BODY[]>(bodyCount) : nullptr),
       bodyForces_(options.bodyState && bodyCount > 0 ? bodyCount : 0),
       bodyForceRows_(options.bodyState && bodyCount > 0 ? bodyCount : 0),
+      bodyImpulses_(options.bodyState && bodyCount > 0 ? bodyCount : 0),
+      bodyImpulseRows_(options.bodyState && bodyCount > 0 ? bodyCount : 0),
       bodyCount_(bodyCount) {
     bodies_.Num = options.bodyState ? bodyCount : 0;
     bodies_.body = bodyStorage_.get();
-    for (std::size_t i = 0; i < bodyForceRows_.size(); ++i)
+    for (std::size_t i = 0; i < bodyForceRows_.size(); ++i) {
         bodyForceRows_[i] = bodyForces_[i].data();
+        bodyImpulseRows_[i] = bodyImpulses_[i].data();
+    }
 }
 OutputFrame::~OutputFrame() { bodies_.body = nullptr; bodies_.Num = 0; }
 PARTICLE& OutputFrame::particles() {
@@ -58,7 +62,9 @@ FORCE& OutputFrame::forces() {
     if (!forces_) throw std::logic_error("force output is disabled");
     return *forces_;
 }
-void OutputFrame::captureBodies(const BODYSET& source, double** loads) {
+void OutputFrame::captureBodies(
+    const BODYSET& source, double** loads, double** impulses
+) {
     if (source.Num != bodyCount_)
         throw std::runtime_error("body count changed while capturing output");
     if (!options_.bodyState) return;
@@ -67,7 +73,10 @@ void OutputFrame::captureBodies(const BODYSET& source, double** loads) {
         bodyStorage_[i].Vel = source.body[i].Vel;
         bodyStorage_[i].AngularVel = source.body[i].AngularVel;
         bodyStorage_[i].orien = source.body[i].orien;
-        for (int k = 0; k < 6; ++k) bodyForces_[i][k] = loads[i][k];
+        for (int k = 0; k < 6; ++k) {
+            bodyForces_[i][k] = loads[i][k];
+            bodyImpulses_[i][k] = impulses[i][k];
+        }
     }
 }
 void OutputFrame::setMetadata(int step, double time) { step_ = step; time_ = time; }
@@ -80,7 +89,8 @@ void OutputFrame::writeFiles() {
         forces_->BodysetForceOutput(step_, forces_->ptNum, bodyCount_);
     if (options_.particleState) particles_->StateOutput(step_);
     if (options_.bodyState && bodyCount_ > 0)
-        bodies_.StateOutput(time_, bodyForceRows_.data(), step_);
+        bodies_.StateOutput(
+            time_, bodyForceRows_.data(), step_, bodyImpulseRows_.data());
 }
 
 class AsyncOutputWriter::Impl {

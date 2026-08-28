@@ -233,6 +233,9 @@ void Simulation::loadParas(const std::string& parafile)
                 control.Multibody_flag = atof(value.c_str());  flag++; 
             } else if (name == "CONTROL_MULTIBODY_FILE") { 
                 control.MultibodyFile = value;                 flag++; 
+            } else if (name == "CONTROL_PRESCRIBED_MOTION_FILE") {
+                control.PrescribedMotionFile = value;
+                flag++;
             } else if (name == "CONTROL_PARTICLES_FILE") { 
                 control.ParticlesFile = value;                 flag++; 
             } else if (name == "CONTROL_OUTPUT_PARTICLE_STATE") {
@@ -277,6 +280,7 @@ void Simulation::loadParas(const std::string& parafile)
     cout << "  control.WallFile   = " << control.WallFile << endl;
     cout << "  control.Multibody_flag = " << control.Multibody_flag << endl;
     cout << "  control.MultibodyFile  = " << control.MultibodyFile << endl;
+    cout << "  control.PrescribedMotionFile = " << control.PrescribedMotionFile << endl;
     cout << "  control.ParticlesFile  = " << control.ParticlesFile << endl;
     cout << "  control.OutputParticleState = " << control.OutputParticleState << endl;
     cout << "  control.OutputParticleForce = " << control.OutputParticleForce << endl;

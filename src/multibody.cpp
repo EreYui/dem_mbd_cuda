@@ -170,7 +170,7 @@ void BODYSET::LoadBodys(const std::string& filename)
     std::cout << "LoadBodys Done......  \n" << endl;
 }
 
-void BODYSET::StateOutput(double time,double **force,int i)
+void BODYSET::StateOutput(double time,double **force,int i,double **impulse)
 {
 	int n = Num;
 	ofstream resfile;
@@ -214,8 +214,12 @@ void BODYSET::StateOutput(double time,double **force,int i)
 				<< setw(WidthDouble) << force[s][2]\
 				<< setw(WidthDouble) << force[s][3]\
 				<< setw(WidthDouble) << force[s][4]\
-				<< setw(WidthDouble) << force[s][5]\
-				<< endl;
+					<< setw(WidthDouble) << force[s][5];
+			if (impulse) {
+				for (int axis = 0; axis < 6; ++axis)
+					resfile << setw(WidthDouble) << impulse[s][axis];
+			}
+			resfile << endl;
 	}
 
 	resfile.close();

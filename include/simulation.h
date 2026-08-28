@@ -21,6 +21,7 @@ struct CONTROL {
     //CouplePolyFile
     int Multibody_flag = 0;
     std::string MultibodyFile;
+    std::string PrescribedMotionFile;
 
     //ParticlesFile
     std::string ParticlesFile;

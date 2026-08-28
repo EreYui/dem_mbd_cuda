@@ -30,7 +30,7 @@ public:
     bool needsBodyForce() const { return options_.bodyForce && bodyCount_ > 0; }
     PARTICLE& particles();
     FORCE& forces();
-    void captureBodies(const BODYSET&, double**);
+    void captureBodies(const BODYSET&, double**, double**);
     void setMetadata(int, double);
 
 private:
@@ -43,6 +43,8 @@ private:
     std::unique_ptr<BODY[]> bodyStorage_;
     std::vector<std::array<double, 6>> bodyForces_;
     std::vector<double*> bodyForceRows_;
+    std::vector<std::array<double, 6>> bodyImpulses_;
+    std::vector<double*> bodyImpulseRows_;
     int bodyCount_ = 0;
     int step_ = -1;
     double time_ = 0.0;

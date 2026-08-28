@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -292,12 +294,23 @@ void CudaDemSolver::computeForces(double, BODYSET* bodyset, double** bodyForces,
                              impl_->meshSize, impl_->maxRadius);
     }
     gpuClearForces(impl_->forces);
+    const int contactStep = impl_->stepIndex++;
+    GpuMechanicalParams particleMechanical = impl_->particleMechanical;
+    GpuMechanicalParams bodyMechanical = impl_->bodyMechanical;
+    GpuMechanicalParams wallMechanical = impl_->wallMechanical;
+    // The pre-integration force evaluation initializes the leapfrog state but
+    // advances no physical time.  Keep dashpot forces active while preventing
+    // an unphysical full-dt increment of tangent/roll/twist history.
+    if (contactStep == 0) {
+        particleMechanical.dt = 0.0;
+        bodyMechanical.dt = 0.0;
+        wallMechanical.dt = 0.0;
+    }
     gpuComputeContacts(impl_->particles, impl_->particleGrid, impl_->walls,
                        impl_->bodies, impl_->triangles, impl_->triangleGrid,
                        impl_->history, impl_->forces,
-                       impl_->particleMechanical, impl_->bodyMechanical,
-                       impl_->wallMechanical,
-                       impl_->stepIndex++);
+                       particleMechanical, bodyMechanical, wallMechanical,
+                       contactStep);
     gpuComputeParticleAcceleration(impl_->particles);
 
     if (collectDiagnostics) {
@@ -370,6 +383,127 @@ double CudaDemSolver::advanceParticles(double fullDt)
 void CudaDemSolver::finishParticleStep(double fullDt, double)
 {
     gpuAdvanceParticleHalfVelocity(impl_->particles, fullDt);
+}
+
+void CudaDemSolver::saveContactHistory(const std::string& filename) const
+{
+    if (!impl_->initialized) {
+        throw std::runtime_error("cannot save contact history before CUDA initialization");
+    }
+    const std::size_t particleSlots = static_cast<std::size_t>(impl_->history.particleCount)
+        * kGpuParticleHistorySlots;
+    const std::size_t wallSlots = static_cast<std::size_t>(impl_->history.particleCount)
+        * kGpuWallHistorySlots;
+    const std::size_t bodySlots = static_cast<std::size_t>(impl_->history.particleCount)
+        * kGpuBodyHistorySlots;
+    std::vector<std::uint64_t> particleKeys(particleSlots), wallKeys(wallSlots),
+        bodyKeys(bodySlots);
+    std::vector<double> particleValues(particleSlots * 9), wallValues(wallSlots * 9),
+        bodyValues(bodySlots * 9);
+    download(particleKeys.data(), impl_->history.particleKeys, particleSlots,
+             "download particle history keys");
+    download(wallKeys.data(), impl_->history.wallKeys, wallSlots,
+             "download wall history keys");
+    download(bodyKeys.data(), impl_->history.bodyKeys, bodySlots,
+             "download body history keys");
+    download(particleValues.data(), impl_->history.particleValues, particleValues.size(),
+             "download particle history values");
+    download(wallValues.data(), impl_->history.wallValues, wallValues.size(),
+             "download wall history values");
+    download(bodyValues.data(), impl_->history.bodyValues, bodyValues.size(),
+             "download body history values");
+
+    std::ofstream output(filename, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error("cannot create CUDA contact-history checkpoint: " + filename);
+    const std::array<char, 8> magic{{'D','M','H','I','S','T','1','\0'}};
+    const std::uint32_t version = 1;
+    const std::uint32_t particleCount = static_cast<std::uint32_t>(impl_->history.particleCount);
+    const std::array<std::uint32_t, 3> slotCounts{{
+        kGpuParticleHistorySlots, kGpuWallHistorySlots, kGpuBodyHistorySlots}};
+    const auto write = [&output](const auto* values, std::size_t count) {
+        output.write(reinterpret_cast<const char*>(values),
+                     static_cast<std::streamsize>(sizeof(*values) * count));
+    };
+    write(magic.data(), magic.size());
+    write(&version, 1);
+    write(&particleCount, 1);
+    write(slotCounts.data(), slotCounts.size());
+    write(particleKeys.data(), particleKeys.size());
+    write(wallKeys.data(), wallKeys.size());
+    write(bodyKeys.data(), bodyKeys.size());
+    write(particleValues.data(), particleValues.size());
+    write(wallValues.data(), wallValues.size());
+    write(bodyValues.data(), bodyValues.size());
+    if (!output) throw std::runtime_error("failed to write CUDA contact-history checkpoint: " + filename);
+}
+
+void CudaDemSolver::loadContactHistory(const std::string& filename)
+{
+    if (!impl_->initialized) {
+        throw std::runtime_error("cannot load contact history before CUDA initialization");
+    }
+    std::ifstream input(filename, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open CUDA contact-history checkpoint: " + filename);
+    const auto read = [&input, &filename](auto* values, std::size_t count) {
+        input.read(reinterpret_cast<char*>(values),
+                   static_cast<std::streamsize>(sizeof(*values) * count));
+        if (!input) throw std::runtime_error("truncated CUDA contact-history checkpoint: " + filename);
+    };
+    std::array<char, 8> magic{};
+    std::uint32_t version = 0;
+    std::uint32_t particleCount = 0;
+    std::array<std::uint32_t, 3> slotCounts{};
+    read(magic.data(), magic.size());
+    read(&version, 1);
+    read(&particleCount, 1);
+    read(slotCounts.data(), slotCounts.size());
+    const std::array<char, 8> expectedMagic{{'D','M','H','I','S','T','1','\0'}};
+    const std::array<std::uint32_t, 3> expectedSlots{{
+        kGpuParticleHistorySlots, kGpuWallHistorySlots, kGpuBodyHistorySlots}};
+    if (magic != expectedMagic || version != 1
+        || particleCount != static_cast<std::uint32_t>(impl_->history.particleCount)
+        || slotCounts != expectedSlots) {
+        throw std::runtime_error("incompatible CUDA contact-history checkpoint: " + filename);
+    }
+    const std::size_t particleSlots = static_cast<std::size_t>(particleCount)
+        * kGpuParticleHistorySlots;
+    const std::size_t wallSlots = static_cast<std::size_t>(particleCount)
+        * kGpuWallHistorySlots;
+    const std::size_t bodySlots = static_cast<std::size_t>(particleCount)
+        * kGpuBodyHistorySlots;
+    std::vector<std::uint64_t> particleKeys(particleSlots), wallKeys(wallSlots),
+        bodyKeys(bodySlots);
+    std::vector<double> particleValues(particleSlots * 9), wallValues(wallSlots * 9),
+        bodyValues(bodySlots * 9);
+    read(particleKeys.data(), particleKeys.size());
+    read(wallKeys.data(), wallKeys.size());
+    read(bodyKeys.data(), bodyKeys.size());
+    read(particleValues.data(), particleValues.size());
+    read(wallValues.data(), wallValues.size());
+    read(bodyValues.data(), bodyValues.size());
+    char trailing = 0;
+    if (input.read(&trailing, 1)) {
+        throw std::runtime_error("oversized CUDA contact-history checkpoint: " + filename);
+    }
+    upload(impl_->history.particleKeys, particleKeys.data(), particleKeys.size(),
+           "upload particle history keys");
+    upload(impl_->history.wallKeys, wallKeys.data(), wallKeys.size(),
+           "upload wall history keys");
+    upload(impl_->history.bodyKeys, bodyKeys.data(), bodyKeys.size(),
+           "upload body history keys");
+    upload(impl_->history.particleValues, particleValues.data(), particleValues.size(),
+           "upload particle history values");
+    upload(impl_->history.wallValues, wallValues.data(), wallValues.size(),
+           "upload wall history values");
+    upload(impl_->history.bodyValues, bodyValues.data(), bodyValues.size(),
+           "upload body history values");
+    checkCuda(cudaMemset(impl_->history.particleLastSeen, 0xff,
+                         sizeof(int) * particleSlots), "reset particle history age");
+    checkCuda(cudaMemset(impl_->history.wallLastSeen, 0xff,
+                         sizeof(int) * wallSlots), "reset wall history age");
+    checkCuda(cudaMemset(impl_->history.bodyLastSeen, 0xff,
+                         sizeof(int) * bodySlots), "reset body history age");
+    impl_->stepIndex = 0;
 }
 
 void CudaDemSolver::downloadParticleState(PARTICLE& p) const
