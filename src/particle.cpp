@@ -7,6 +7,10 @@
 #include <fstream>  // std::ofstream
 #include <iomanip>
 #include <cassert>
+#include <cmath>
+#include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include<vector>
 
 using namespace std;
@@ -45,7 +49,7 @@ void PARTICLE::LoadParticles(string iniconfile)
     Num = count;
     Mass = new double[Num];
     Radius = new double[Num];
-    Inertia = new double[Num];
+    Inertia = new vector3d[Num];
     Number = new int[Num];
     Status = new int[Num];
 
@@ -81,7 +85,8 @@ void PARTICLE::LoadParticles(string iniconfile)
     //
     for (j = 0; j < Num; j++)
     {
-        Inertia[j] = 0.4 * Mass[j] * Radius[j] * Radius[j];
+        const double sphereInertia = 0.4 * Mass[j] * Radius[j] * Radius[j];
+        Inertia[j] = vector3d(sphereInertia, sphereInertia, sphereInertia);
     }
 
     MeshSize = 0.0;
@@ -93,9 +98,171 @@ void PARTICLE::LoadParticles(string iniconfile)
 
     cout << "  The number of particles  = " << Num << endl;
     cout << "  The radius of particles  = " << Radius[0] << endl;
-    cout << "  The inertia of particles = " << Inertia[0] << endl;
+    cout << "  The principal inertia of particles = "
+         << Inertia[0][0] << ", " << Inertia[0][1] << ", " << Inertia[0][2]
+         << endl;
 
     cout << "Particles Loaded......  \n" << endl;
+}
+
+void PARTICLE::LoadPrincipalInertia(const string& inertiafile)
+{
+    if (inertiafile.empty()) {
+        return; // LoadParticles already synthesized the legacy solid-sphere value.
+    }
+    const auto path = file_utils::requireInputFile(
+        inertiafile, "particle principal-inertia sidecar");
+    ifstream input(path);
+    if (!input) {
+        throw file_utils::pathError(
+            "Cannot open / 无法打开", "particle principal-inertia sidecar", path);
+    }
+    unordered_map<int, int> ownerRows;
+    ownerRows.reserve(static_cast<size_t>(Num));
+    for (int i = 0; i < Num; ++i) {
+        ownerRows.emplace(Number[i], i);
+    }
+    vector<bool> seen(static_cast<size_t>(Num), false);
+    string line;
+    int lineNumber = 0;
+    int records = 0;
+    while (getline(input, line)) {
+        ++lineNumber;
+        if (line.find_first_not_of(" \t\r\n") == string::npos) continue;
+        istringstream record(line);
+        int ownerId = 0;
+        double ix = 0.0, iy = 0.0, iz = 0.0;
+        string trailing;
+        if (!(record >> ownerId >> ix >> iy >> iz) || (record >> trailing)) {
+            throw runtime_error(
+                "Invalid principal-inertia record at "
+                + file_utils::absolutePathForMessage(path) + ":"
+                + to_string(lineNumber) + "; expected owner_id Ixx Iyy Izz");
+        }
+        const auto owner = ownerRows.find(ownerId);
+        if (owner == ownerRows.end()) {
+            throw runtime_error(
+                "Unknown owner ID in principal-inertia sidecar: "
+                + to_string(ownerId));
+        }
+        const int row = owner->second;
+        if (seen[static_cast<size_t>(row)]) {
+            throw runtime_error(
+                "Duplicate owner ID in principal-inertia sidecar: "
+                + to_string(ownerId));
+        }
+        if (!isfinite(ix) || !isfinite(iy) || !isfinite(iz)
+            || ix <= 0.0 || iy <= 0.0 || iz <= 0.0) {
+            throw runtime_error(
+                "Principal inertia must be finite and strictly positive for owner "
+                + to_string(ownerId));
+        }
+        Inertia[row] = vector3d(ix, iy, iz);
+        seen[static_cast<size_t>(row)] = true;
+        ++records;
+    }
+    if (records != Num) {
+        throw runtime_error(
+            "Principal-inertia sidecar must contain exactly one record per owner");
+    }
+}
+
+void PARTICLE::LoadClumpComponents(const string& componentfile)
+{
+    delete[] ComponentId;
+    delete[] ComponentOwner;
+    delete[] ComponentRadius;
+    delete[] ComponentPosBody;
+    ComponentId = nullptr;
+    ComponentOwner = nullptr;
+    ComponentRadius = nullptr;
+    ComponentPosBody = nullptr;
+    ComponentNum = 0;
+
+    if (componentfile.empty()) {
+        ComponentNum = Num;
+        ComponentId = new int[ComponentNum];
+        ComponentOwner = new int[ComponentNum];
+        ComponentRadius = new double[ComponentNum];
+        ComponentPosBody = new vector3d[ComponentNum];
+        for (int i = 0; i < Num; ++i) {
+            ComponentId[i] = Number[i];
+            ComponentOwner[i] = i;
+            ComponentRadius[i] = Radius[i];
+            ComponentPosBody[i] = vector3d(0.0, 0.0, 0.0);
+        }
+        return;
+    }
+
+    const auto path = file_utils::requireInputFile(
+        componentfile, "clump-component sidecar");
+    ifstream countInput(path);
+    string line;
+    while (getline(countInput, line)) {
+        if (line.find_first_not_of(" \t\r\n") != string::npos) ++ComponentNum;
+    }
+    if (ComponentNum <= 0) {
+        throw runtime_error("Clump-component sidecar must not be empty");
+    }
+    ComponentId = new int[ComponentNum];
+    ComponentOwner = new int[ComponentNum];
+    ComponentRadius = new double[ComponentNum];
+    ComponentPosBody = new vector3d[ComponentNum];
+
+    unordered_map<int, int> ownerRows;
+    ownerRows.reserve(static_cast<size_t>(Num));
+    for (int i = 0; i < Num; ++i) ownerRows.emplace(Number[i], i);
+    unordered_set<int> componentIds;
+    componentIds.reserve(static_cast<size_t>(ComponentNum));
+    vector<int> ownerCounts(static_cast<size_t>(Num), 0);
+    ifstream input(path);
+    int row = 0;
+    int lineNumber = 0;
+    while (getline(input, line)) {
+        ++lineNumber;
+        if (line.find_first_not_of(" \t\r\n") == string::npos) continue;
+        istringstream record(line);
+        int componentId = 0, ownerId = 0;
+        double radius = 0.0, x = 0.0, y = 0.0, z = 0.0;
+        string trailing;
+        if (!(record >> componentId >> ownerId >> radius >> x >> y >> z)
+            || (record >> trailing)) {
+            throw runtime_error(
+                "Invalid clump-component record at "
+                + file_utils::absolutePathForMessage(path) + ":"
+                + to_string(lineNumber)
+                + "; expected component_id owner_id radius body_x body_y body_z");
+        }
+        const auto owner = ownerRows.find(ownerId);
+        if (owner == ownerRows.end()) {
+            throw runtime_error(
+                "Unknown owner ID in clump-component sidecar: "
+                + to_string(ownerId));
+        }
+        if (!componentIds.insert(componentId).second) {
+            throw runtime_error(
+                "Duplicate component ID in clump-component sidecar: "
+                + to_string(componentId));
+        }
+        if (!isfinite(radius) || radius <= 0.0
+            || !isfinite(x) || !isfinite(y) || !isfinite(z)) {
+            throw runtime_error(
+                "Clump-component geometry must be finite with positive radius");
+        }
+        ComponentId[row] = componentId;
+        ComponentOwner[row] = owner->second;
+        ComponentRadius[row] = radius;
+        ComponentPosBody[row] = vector3d(x, y, z);
+        ++ownerCounts[static_cast<size_t>(owner->second)];
+        ++row;
+    }
+    for (int i = 0; i < Num; ++i) {
+        if (ownerCounts[static_cast<size_t>(i)] == 0) {
+            throw runtime_error(
+                "Every particle owner must have at least one clump component; missing owner "
+                + to_string(Number[i]));
+        }
+    }
 }
 
 void PARTICLE::FreeParticles()
@@ -110,6 +277,10 @@ void PARTICLE::FreeParticles()
     delete[]Quat;
     delete[]AngSpd;
     delete[]Idx;
+    delete[]ComponentId;
+    delete[]ComponentOwner;
+    delete[]ComponentRadius;
+    delete[]ComponentPosBody;
     Mass = nullptr;
     Radius = nullptr;
     Inertia = nullptr;
@@ -120,6 +291,11 @@ void PARTICLE::FreeParticles()
     Quat = nullptr;
     AngSpd = nullptr;
     Idx = nullptr;
+    ComponentId = nullptr;
+    ComponentOwner = nullptr;
+    ComponentRadius = nullptr;
+    ComponentPosBody = nullptr;
+    ComponentNum = 0;
     Num = 0;
 }
 

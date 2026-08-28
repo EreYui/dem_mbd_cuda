@@ -25,6 +25,8 @@ struct CONTROL {
 
     //ParticlesFile
     std::string ParticlesFile;
+    std::string ParticleInertiaFile;
+    std::string ClumpComponentsFile;
 
     // Runtime output switches (0: disabled, 1: enabled).
     bool OutputParticleState = true;

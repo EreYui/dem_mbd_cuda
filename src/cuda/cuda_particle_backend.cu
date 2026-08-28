@@ -89,9 +89,15 @@ __global__ void accelerationKernel(GpuParticleArrays d)
     const double tz = 2.0*(qx*qz + qw*qy)*d.tx[i]
                     + 2.0*(qy*qz - qw*qx)*d.ty[i]
                     + (1.0 - 2.0*(qx*qx + qy*qy))*d.tz[i];
-    d.awx[i] = tx / d.inertia[i];
-    d.awy[i] = ty / d.inertia[i];
-    d.awz[i] = tz / d.inertia[i];
+    const double wx = d.wx[i];
+    const double wy = d.wy[i];
+    const double wz = d.wz[i];
+    const double ix = d.inertiaX[i];
+    const double iy = d.inertiaY[i];
+    const double iz = d.inertiaZ[i];
+    d.awx[i] = (tx - (iz - iy) * wz * wy) / ix;
+    d.awy[i] = (ty - (ix - iz) * wx * wz) / iy;
+    d.awz[i] = (tz - (iy - ix) * wy * wx) / iz;
 }
 
 __device__ void quatDerivative(
@@ -225,7 +231,9 @@ void gpuAllocateParticles(GpuParticleArrays& d, int n)
     if (n <= 0) return;
 
     allocDouble(d.mass, n);
-    allocDouble(d.inertia, n);
+    allocDouble(d.inertiaX, n);
+    allocDouble(d.inertiaY, n);
+    allocDouble(d.inertiaZ, n);
     allocDouble(d.radius, n);
     checkCuda(cudaMalloc(&d.id, sizeof(int) * n), "cudaMalloc(particle id)");
     checkCuda(cudaMalloc(&d.status, sizeof(int) * n), "cudaMalloc(status)");
@@ -274,7 +282,9 @@ void gpuAllocateParticles(GpuParticleArrays& d, int n)
 void gpuFreeParticles(GpuParticleArrays& d)
 {
     cudaFree(d.mass);
-    cudaFree(d.inertia);
+    cudaFree(d.inertiaX);
+    cudaFree(d.inertiaY);
+    cudaFree(d.inertiaZ);
     cudaFree(d.radius);
     cudaFree(d.id);
     cudaFree(d.status);

@@ -5,7 +5,14 @@
 class PARTICLE {
 public:
     int Num = 0;   // 颗粒数量
-    double* Mass = nullptr, * Radius = nullptr, * Inertia = nullptr;// 质量, 半径, 转动惯量
+    double* Mass = nullptr, * Radius = nullptr;// 质量, 半径
+    vector3d* Inertia = nullptr; // body-frame principal moments of inertia
+
+    int ComponentNum = 0;
+    int* ComponentId = nullptr;
+    int* ComponentOwner = nullptr; // zero-based owner row
+    double* ComponentRadius = nullptr;
+    vector3d* ComponentPosBody = nullptr;
 
     int* Number = nullptr;  //颗粒编号
     int *Status = nullptr;  //0:正常, 1:接触, 2:重叠
@@ -25,6 +32,8 @@ public:
     vector3d LowerLmt, UpperLmt;
 
     void LoadParticles(std::string iniconfile);
+    void LoadPrincipalInertia(const std::string& inertiafile);
+    void LoadClumpComponents(const std::string& componentfile);
     void StateOutput(int i);
     void FreeParticles();
     ~PARTICLE();

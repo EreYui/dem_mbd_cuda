@@ -80,14 +80,19 @@ void uploadParticles(const PARTICLE& p, GpuParticleArrays& d)
     const int n = p.Num;
     std::vector<double> x(n), y(n), z(n), vx(n), vy(n), vz(n);
     std::vector<double> wx(n), wy(n), wz(n), qw(n), qx(n), qy(n), qz(n);
+    std::vector<double> inertiaX(n), inertiaY(n), inertiaZ(n);
     for (int i = 0; i < n; ++i) {
         x[i]=p.Pos[i][0]; y[i]=p.Pos[i][1]; z[i]=p.Pos[i][2];
         vx[i]=p.Vel[i][0]; vy[i]=p.Vel[i][1]; vz[i]=p.Vel[i][2];
         wx[i]=p.AngSpd[i][0]; wy[i]=p.AngSpd[i][1]; wz[i]=p.AngSpd[i][2];
         qw[i]=p.Quat[i][0]; qx[i]=p.Quat[i][1]; qy[i]=p.Quat[i][2]; qz[i]=p.Quat[i][3];
+        inertiaX[i]=p.Inertia[i][0]; inertiaY[i]=p.Inertia[i][1];
+        inertiaZ[i]=p.Inertia[i][2];
     }
     upload(d.mass, p.Mass, n, "upload particle mass");
-    upload(d.inertia, p.Inertia, n, "upload particle inertia");
+    upload(d.inertiaX, inertiaX.data(), n, "upload particle inertia x");
+    upload(d.inertiaY, inertiaY.data(), n, "upload particle inertia y");
+    upload(d.inertiaZ, inertiaZ.data(), n, "upload particle inertia z");
     upload(d.radius, p.Radius, n, "upload particle radius");
     upload(d.id, p.Number, n, "upload stable particle id");
     upload(d.status, p.Status, n, "upload particle status");

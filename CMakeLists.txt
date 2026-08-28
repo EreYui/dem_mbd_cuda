@@ -95,6 +95,16 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    add_executable(particle_schema_tests
+        tests/particle_schema_test.cpp
+        src/particle.cpp
+    )
+    target_include_directories(particle_schema_tests PRIVATE include)
+    if(MSVC)
+        target_compile_options(particle_schema_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME particle_schema_tests COMMAND particle_schema_tests)
+
     add_executable(output_compare tests/output_compare.cpp)
     target_compile_features(output_compare PRIVATE cxx_std_17)
     if(MSVC)

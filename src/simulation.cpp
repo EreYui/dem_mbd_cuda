@@ -106,6 +106,8 @@ void Simulation::init(const std::string& parafile) {
             "CONTROL_PARTICLES_FILE is missing / 未配置颗粒文件路径");
     }
     pt.LoadParticles(control.ParticlesFile);
+    pt.LoadPrincipalInertia(control.ParticleInertiaFile);
+    pt.LoadClumpComponents(control.ClumpComponentsFile);
     
 	// 加载刚体数据
     if (control.Multibody_flag) {
@@ -238,6 +240,10 @@ void Simulation::loadParas(const std::string& parafile)
                 flag++;
             } else if (name == "CONTROL_PARTICLES_FILE") { 
                 control.ParticlesFile = value;                 flag++; 
+            } else if (name == "CONTROL_PARTICLE_INERTIA_FILE") {
+                control.ParticleInertiaFile = value;           flag++;
+            } else if (name == "CONTROL_CLUMP_COMPONENTS_FILE") {
+                control.ClumpComponentsFile = value;           flag++;
             } else if (name == "CONTROL_OUTPUT_PARTICLE_STATE") {
                 control.OutputParticleState = parseOutputSwitch(
                     name, value, parameterPath.u8string(), lineNumber); flag++;
@@ -282,6 +288,8 @@ void Simulation::loadParas(const std::string& parafile)
     cout << "  control.MultibodyFile  = " << control.MultibodyFile << endl;
     cout << "  control.PrescribedMotionFile = " << control.PrescribedMotionFile << endl;
     cout << "  control.ParticlesFile  = " << control.ParticlesFile << endl;
+    cout << "  control.ParticleInertiaFile = " << control.ParticleInertiaFile << endl;
+    cout << "  control.ClumpComponentsFile = " << control.ClumpComponentsFile << endl;
     cout << "  control.OutputParticleState = " << control.OutputParticleState << endl;
     cout << "  control.OutputParticleForce = " << control.OutputParticleForce << endl;
     cout << "  control.OutputBodyState     = " << control.OutputBodyState << endl;
@@ -690,6 +698,8 @@ void Simulation::summaryOutput(int time) {
 	resfile << "CONTROL_MULTIBODY_FLAG = " << std::left<< setw(8) << control.Multibody_flag << " # 多体系统标志" << endl;
 	resfile << "CONTROL_UNIVERSAL_GRAVITATION_FLAG = " << std::left<< setw(8) << control.Universal_gravitation_flag << " # 万有引力标志" << endl;
 	resfile << "CONTROL_PARTICLES_FILE = " << control.ParticlesFile << " # Particles" << endl;
+	resfile << "CONTROL_PARTICLE_INERTIA_FILE = " << control.ParticleInertiaFile << endl;
+	resfile << "CONTROL_CLUMP_COMPONENTS_FILE = " << control.ClumpComponentsFile << endl;
 	resfile << "CONTROL_MULTIBODY_FILE = " << control.MultibodyFile << " # 多体系统文件 / Multibody system file" << endl;
 	resfile << "CONTROL_WALL_FILE      = " << control.WallFile << " # 墙壁数据文件 / Wall data file" << endl;
 	resfile << "CONTROL_OUTPUT_PARTICLE_STATE = " << control.OutputParticleState << endl;

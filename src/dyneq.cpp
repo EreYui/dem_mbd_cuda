@@ -27,7 +27,10 @@ void DynEqnParticle(int id, PARTICLE& pt, double* FR, vector3d &acc, vector3d &d
     DCM = Quat2DCM(orien);
     T = DCM * T; // MC_id transformed to body-fixed frame
 
-    domg = T * (1.0 / pt.Inertia[id]);
+    const vector3d inertia = pt.Inertia[id];
+    domg[0] = (T[0] - (inertia[2] - inertia[1]) * omg[2] * omg[1]) / inertia[0];
+    domg[1] = (T[1] - (inertia[0] - inertia[2]) * omg[0] * omg[2]) / inertia[1];
+    domg[2] = (T[2] - (inertia[1] - inertia[0]) * omg[1] * omg[0]) / inertia[2];
 }
 
 void DynMotionBody(double dt, BODYSET& bodyset)//?//
@@ -130,4 +133,3 @@ void DynEqnBodySet(double time, BODYSET& bodyset, double** F, double** ddu, int 
 {
 
 }
-

@@ -5,7 +5,9 @@
 struct GpuParticleArrays {
     int n = 0;
     double* mass = nullptr;
-    double* inertia = nullptr;
+    double* inertiaX = nullptr;
+    double* inertiaY = nullptr;
+    double* inertiaZ = nullptr;
     double* radius = nullptr;
     int* id = nullptr;
     int* status = nullptr;
