@@ -293,6 +293,7 @@ public:
     ComponentMetadata componentMetadata;
     std::vector<int> ownerIds;
     bool restoredParticleLeapfrogState = false;
+    std::uint64_t bodyRegimeIntervalNativeSteps = 0;
 };
 
 CudaDemSolver::CudaDemSolver() : impl_(new Impl) {}
@@ -324,7 +325,7 @@ void CudaDemSolver::initialize(PARTICLE& p, BODYSET* bodyset,
     gpuUpdateComponents(impl_->components, impl_->particles);
     gpuAllocateGrid(impl_->particleGrid, p.ComponentNum);
     gpuAllocateContactHistory(impl_->history, p.ComponentNum);
-    gpuAllocateForces(impl_->forces, p.Num, bodyCount,
+    gpuAllocateForces(impl_->forces, p.Num, p.ComponentNum, bodyCount,
                       control.OutputParticleForce,
                       control.OutputBodyForce);
     if (control.Wall_flag && control.wall.number > 0) {
@@ -412,6 +413,9 @@ void CudaDemSolver::computeForces(double, BODYSET* bodyset, double** bodyForces,
                        impl_->history, impl_->forces,
                        particleMechanical, bodyMechanical, wallMechanical,
                        contactStep);
+    if (bodyMechanical.dt > 0.0 && impl_->bodies.n > 0) {
+        ++impl_->bodyRegimeIntervalNativeSteps;
+    }
     gpuComputeParticleAcceleration(impl_->particles);
 
     if (collectDiagnostics) {
@@ -424,6 +428,32 @@ void CudaDemSolver::computeForces(double, BODYSET* bodyset, double** bodyForces,
              "download body max depth");
     download(&stats.bodyContactFz, impl_->forces.bodyContactFz, 1,
              "download body contact Fz");
+    if (impl_->bodies.n > 0) {
+        const std::size_t count = static_cast<std::size_t>(impl_->bodies.n)
+            * kGpuBodyRegimeCounterCount;
+        std::vector<unsigned long long> instant(count);
+        std::vector<unsigned long long> interval(count);
+        download(instant.data(), impl_->forces.bodyRegimeInstant, count,
+                 "download body regime instantaneous counters");
+        download(interval.data(), impl_->forces.bodyRegimeInterval, count,
+                 "download body regime interval counters");
+        stats.bodyRegimeInstant.resize(impl_->bodies.n);
+        stats.bodyRegimeInterval.resize(impl_->bodies.n);
+        for (int body = 0; body < impl_->bodies.n; ++body) {
+            for (int field = 0; field < kGpuBodyRegimeCounterCount; ++field) {
+                const std::size_t index = static_cast<std::size_t>(body)
+                    * kGpuBodyRegimeCounterCount + field;
+                stats.bodyRegimeInstant[body][field] = instant[index];
+                stats.bodyRegimeInterval[body][field] = interval[index];
+            }
+        }
+        stats.bodyRegimeIntervalNativeSteps =
+            impl_->bodyRegimeIntervalNativeSteps;
+        checkCuda(cudaMemset(impl_->forces.bodyRegimeInterval, 0,
+                             sizeof(unsigned long long) * count),
+                  "reset body regime interval counters");
+        impl_->bodyRegimeIntervalNativeSteps = 0;
+    }
     download(&stats.particleHistoryOverflows,
              impl_->forces.particleHistoryOverflowCount, 1,
              "download particle history overflow count");

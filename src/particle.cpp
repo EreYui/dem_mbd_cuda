@@ -330,7 +330,9 @@ void PARTICLE::StateOutput(int i)
 	//
 	const int WidthInt = 10;
 	const int WidthDouble = 16;
-	const int PrecDouble = 12;
+	// Particle state files are valid restart inputs.  Seventeen decimal digits
+	// preserve round-trip binary64 values across a fresh native process.
+	const int PrecDouble = 17;
 
 	int num_threads = 1;
 	std::vector<std::string> buffers(num_threads);

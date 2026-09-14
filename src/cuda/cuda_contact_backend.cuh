@@ -12,6 +12,13 @@ constexpr int kGpuParticleHistorySlots = 64;
 constexpr int kGpuWallHistorySlots = 16;
 constexpr int kGpuBodyHistorySlots = 64;
 constexpr int kGpuMaxCellsPerTriangle = 125;
+constexpr int kGpuBodyRegimeCounterCount = 7;
+
+__host__ __device__ constexpr bool gpuElasticTrialBranchYielded(
+    double elasticTrialNorm, double limit)
+{
+    return elasticTrialNorm > limit;
+}
 
 struct GpuMechanicalParams {
     double epsS = 1.0;
@@ -45,6 +52,7 @@ struct GpuContactHistory {
 
 struct GpuForceArrays {
     int particleCount = 0;
+    int componentCount = 0;
     int bodyCount = 0;
     double* contact = nullptr;      // [particle][6]
     double* field = nullptr;        // [particle][6]
@@ -61,6 +69,9 @@ struct GpuForceArrays {
     int* bodyHistoryHighWater = nullptr;
     double* bodyMaxDepth = nullptr;
     double* bodyContactFz = nullptr;
+    int* bodyRegimeState = nullptr; // [body][component], active/slide/twist bits
+    unsigned long long* bodyRegimeInstant = nullptr;  // [body][7]
+    unsigned long long* bodyRegimeInterval = nullptr; // [body][7]
 };
 
 struct GpuTriangleGrid {
@@ -78,7 +89,8 @@ struct GpuTriangleGrid {
 
 void gpuAllocateContactHistory(GpuContactHistory& history, int particleCount);
 void gpuFreeContactHistory(GpuContactHistory& history);
-void gpuAllocateForces(GpuForceArrays& forces, int particleCount, int bodyCount,
+void gpuAllocateForces(GpuForceArrays& forces, int particleCount,
+                       int componentCount, int bodyCount,
                        bool keepBodyParticle, bool keepBodyDetail);
 void gpuFreeForces(GpuForceArrays& forces);
 void gpuAllocateTriangleGrid(GpuTriangleGrid& grid, int triangleCount);

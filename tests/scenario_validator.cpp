@@ -29,6 +29,49 @@ void near(double actual, double expected, double tolerance, const std::string& n
     if (error > tolerance) throw std::runtime_error(name + " exceeds tolerance");
 }
 
+void validateBodyRegimes(const fs::path& file, bool requireContact) {
+    std::ifstream input(file);
+    if (!input) throw std::runtime_error("cannot open " + file.string());
+    std::string line;
+    if (!std::getline(input, line) || line.find("window_slide_and_twist") == std::string::npos)
+        throw std::runtime_error("native PT branch header is missing or stale");
+    bool sawContact = false;
+    int rowCount = 0;
+    while (std::getline(input, line)) {
+        if (line.empty()) continue;
+        std::istringstream stream(line);
+        std::vector<std::string> fields;
+        std::string field;
+        while (std::getline(stream, field, ',')) fields.push_back(field);
+        if (fields.size() != 19 || fields[0] != "native_pt_branch_v1")
+            throw std::runtime_error("native PT branch row has the wrong schema");
+        std::vector<unsigned long long> count(15);
+        count[0] = std::stoull(fields[4]);
+        for (int i = 1; i < 15; ++i) count[i] = std::stoull(fields[i + 4]);
+        for (int offset : {1, 8}) {
+            const auto active = count[offset];
+            const auto stick = count[offset + 1];
+            const auto slidePrimary = count[offset + 2];
+            const auto twistPrimary = count[offset + 3];
+            const auto slide = count[offset + 4];
+            const auto twist = count[offset + 5];
+            const auto both = count[offset + 6];
+            if (stick + slidePrimary + twistPrimary != active
+                || both > slide || both > twist
+                || slide + twist - both > active
+                || slidePrimary != slide - both
+                || twistPrimary != twist
+                || stick != active - slide - twist + both) {
+                throw std::runtime_error("native PT branch counters violate invariants");
+            }
+            sawContact = sawContact || active > 0;
+        }
+        ++rowCount;
+    }
+    if (rowCount == 0 || (requireContact && !sawContact))
+        throw std::runtime_error("native PT branch rows/contact are missing");
+}
+
 int main(int argc, char** argv) {
     if (argc != 3) return EXIT_FAILURE;
     try {
@@ -56,6 +99,7 @@ int main(int argc, char** argv) {
             near(particle.at(23), 100.0, 1e-8, "triangle force on particle z");
             near(body.at(16), -100.0, 1e-8, "triangle force on body z");
             near(particle.at(23) + body.at(16), 0.0, 1e-10, "triangle action-reaction");
+            validateBodyRegimes(out / "native_body_contact_branches.csv", true);
         } else if (scenario == "body_states") {
             const auto fixed = row(out / "state_bodys" / "At.00000010.bt", 0);
             const auto prescribed = row(out / "state_bodys" / "At.00000010.bt", 1);
@@ -66,6 +110,7 @@ int main(int argc, char** argv) {
             near(prescribed.at(9), 1.0, 1e-12, "prescribed body omega z");
             near(prescribed.at(13), std::sin(0.005), 2e-9,
                  "prescribed body quaternion z");
+            validateBodyRegimes(out / "native_body_contact_branches.csv", false);
         } else {
             throw std::runtime_error("unknown scenario " + scenario);
         }

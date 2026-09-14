@@ -1,8 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 class PARTICLE;
 class BODYSET;
@@ -21,6 +24,12 @@ struct CudaStepStats {
     int particleHistoryHighWater = 0;
     int bodyHistoryHighWater = 0;
     int triangleGridOverflows = 0;
+    // Per-body PT component-manifold counts.  Columns are active, primary
+    // stick, primary slide, primary twist, slide flag, twist flag, and both
+    // flags.  Primary classes use the fixed priority twist > slide > stick.
+    std::vector<std::array<std::uint64_t, 7>> bodyRegimeInstant;
+    std::vector<std::array<std::uint64_t, 7>> bodyRegimeInterval;
+    std::uint64_t bodyRegimeIntervalNativeSteps = 0;
 };
 
 // Persistent CUDA DEM solver. Particle state, contact history, spatial grids,

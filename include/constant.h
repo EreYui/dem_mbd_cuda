@@ -12,8 +12,11 @@
 const int WidthOutput = 8; // The output number width of file name
 const int NumParameter = 15; // The number of input parameters from PAR file
 const int WidthInt = 22; // The output width of integer data
-const int WidthDouble = 22; // The output width of double data
-const int PrecDouble = 12; // The output precession of double data
+// Scientific binary64 with 17 fractional digits needs up to 25 characters;
+// one extra column preserves whitespace separation in legacy fixed-width rows.
+const int WidthDouble = 26;
+// State files are valid restart inputs, so preserve round-trip double precision.
+const int PrecDouble = 17;
 
 // solver constants
 //const int EqnDimAsteroid = 7; // The dimension of binary equations
@@ -69,4 +72,3 @@ const int NghbrUp[27][3] =
 
 
 #endif
-

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -71,6 +72,36 @@ private:
 AsyncOutputOptions outputOptions(const CONTROL& control) {
     return {control.OutputParticleState, control.OutputParticleForce,
             control.OutputBodyState, control.OutputBodyForce};
+}
+
+void writeBodyRegimeHeader(std::ofstream& output) {
+    output
+        << "schema_version,end_step,end_time_s,body_id,window_native_steps,"
+        << "instant_active,instant_primary_stick,instant_primary_slide,"
+        << "instant_primary_twist,instant_slide_yield,instant_twist_yield,"
+        << "instant_slide_and_twist,window_active,window_primary_stick,"
+        << "window_primary_slide,window_primary_twist,window_slide_yield,"
+        << "window_twist_yield,window_slide_and_twist\n";
+    output << std::setprecision(17);
+}
+
+void writeBodyRegimeRows(std::ofstream& output, const CudaStepStats& stats,
+                         int endStep, double endTime) {
+    if (stats.bodyRegimeInstant.size() != stats.bodyRegimeInterval.size()) {
+        throw std::runtime_error("native PT branch counter body dimensions differ");
+    }
+    for (std::size_t body = 0; body < stats.bodyRegimeInstant.size(); ++body) {
+        output << "native_pt_branch_v1," << endStep << ',' << endTime << ','
+               << body << ',' << stats.bodyRegimeIntervalNativeSteps;
+        for (const auto count : stats.bodyRegimeInstant[body])
+            output << ',' << count;
+        for (const auto count : stats.bodyRegimeInterval[body])
+            output << ',' << count;
+        output << '\n';
+    }
+    if (!output) {
+        throw std::runtime_error("failed to write native PT branch counters");
+    }
 }
 
 void enqueueCudaFrame(AsyncOutputWriter* writer, CudaDemSolver& solver,
@@ -228,9 +259,21 @@ void Simulation::IntegrateDemMultiBody() {
     std::unique_ptr<AsyncOutputWriter> output;
     if (options.any(bodyset.Num))
         output = std::make_unique<AsyncOutputWriter>(pt, bodyset.Num, options);
+    const auto regimeOutputPath = file_utils::prepareOutputFile(
+        "OutputFile/native_body_contact_branches.csv",
+        "native PT constitutive-branch counters");
+    std::ofstream regimeOutput(regimeOutputPath);
+    if (!regimeOutput.is_open()) {
+        throw file_utils::pathError(
+            "Cannot open / 无法打开", "native PT constitutive-branch counters",
+            regimeOutputPath);
+    }
+    writeBodyRegimeHeader(regimeOutput);
 
     std::cout << "CUDA DEM-MBD solver: " << CudaDeviceDescription() << std::endl;
     solver.computeForces(0.0, &bodyset, bodyForces, true);
+    writeBodyRegimeRows(regimeOutput, solver.stepStats(), ode.StartStep,
+                        ode.StartStep * ode.StepSize);
     std::cout << "Persistent CUDA memory = "
               << solver.deviceMemoryBytes() / (1024.0 * 1024.0) << " MiB" << std::endl;
     bodyImpulseStorage.clear();
@@ -325,6 +368,7 @@ void Simulation::IntegrateDemMultiBody() {
                              bodyImpulses, step, currentTime);
             bodyImpulseStorage.clear();
             const auto stats = solver.stepStats();
+            writeBodyRegimeRows(regimeOutput, stats, step + 1, nextTime);
             std::cout << "  " << step + 1 << "/" << ode.EndStep
                       << ", particle/triangle grid = "
                       << solver.particleGridEntryCount() << "/"

@@ -1,4 +1,5 @@
 #include "cuda/cuda_particle_backend.cuh"
+#include "cuda/cuda_contact_backend.cuh"
 
 #include <cuda_runtime.h>
 
@@ -46,6 +47,20 @@ int main()
     GpuParticleArrays owners;
     GpuComponentArrays components;
     try {
+        if (gpuElasticTrialBranchYielded(0.9, 1.0)) {
+            throw std::runtime_error("sub-limit elastic trial reported yield");
+        }
+        // Damping can make the returned total response exceed the limit, but
+        // the constitutive branch is selected from the elastic trial alone.
+        const double elasticTrial = 0.9;
+        const double dampingResponse = 0.5;
+        if (elasticTrial + dampingResponse <= 1.0
+            || gpuElasticTrialBranchYielded(elasticTrial, 1.0)) {
+            throw std::runtime_error("damped response changed elastic branch semantics");
+        }
+        if (!gpuElasticTrialBranchYielded(1.1, 1.0)) {
+            throw std::runtime_error("super-limit elastic trial omitted yield");
+        }
         gpuAllocateParticles(owners, 1);
         gpuAllocateComponents(components, 1, 1);
         const double halfSqrtTwo = std::sqrt(0.5);

@@ -267,7 +267,8 @@ __device__ DVec3 transportAxialHistory(DVec3 previous, DVec3 normal)
 __device__ DVec3 limitedHistoryResponseRates(
     DVec3 historyRate, DVec3 responseRate, double stiffness,
     double damping, double dt, DVec3 previous, double limit,
-    double* values, int slot, int category, bool storeHistory = true)
+    double* values, int slot, int category, bool storeHistory = true,
+    bool* yielded = nullptr)
 {
     const DVec3 delta = mul(historyRate, dt);
     const DVec3 elasticIncrement = mul(delta, stiffness);
@@ -275,7 +276,9 @@ __device__ DVec3 limitedHistoryResponseRates(
     const DVec3 trial = add(mul(responseRate, damping), elasticTrial);
     const double trialNorm = norm(elasticTrial);
     DVec3 response;
-    if (trialNorm > limit) {
+    const bool branchYielded = gpuElasticTrialBranchYielded(trialNorm, limit);
+    if (yielded) *yielded = branchYielded;
+    if (branchYielded) {
         const double deltaNorm = norm(delta);
         if (deltaNorm > 1.0e-14) {
             response = mul(elasticTrial, limit / trialNorm);
@@ -299,11 +302,12 @@ __device__ DVec3 limitedHistoryResponse(DVec3 rate, double stiffness,
                                         double damping, double dt,
                                         DVec3 previous, double limit,
                                         double* values, int slot, int category,
-                                        bool storeHistory = true)
+                                        bool storeHistory = true,
+                                        bool* yielded = nullptr)
 {
     return limitedHistoryResponseRates(
         rate, rate, stiffness, damping, dt, previous, limit,
-        values, slot, category, storeHistory);
+        values, slot, category, storeHistory, yielded);
 }
 
 __device__ double cross2(DVec2 a, DVec2 b) { return a.x*b.y - a.y*b.x; }
@@ -491,6 +495,14 @@ __global__ void clearForcesKernel(GpuForceArrays f)
         for (int index = i; index < bodyDetail19; index += blockDim.x * gridDim.x)
             f.bodyDetail[index] = 0.0;
     }
+    const int bodyRegimeCount = f.bodyCount * kGpuBodyRegimeCounterCount;
+    for (int index = i; index < bodyRegimeCount; index += blockDim.x * gridDim.x) {
+        f.bodyRegimeInstant[index] = 0ull;
+    }
+    const int bodyComponentCount = f.bodyCount * f.componentCount;
+    for (int index = i; index < bodyComponentCount; index += blockDim.x * gridDim.x) {
+        f.bodyRegimeState[index] = 0;
+    }
     const int body6 = f.bodyCount * 6;
     for (int index = i; index < body6; index += blockDim.x * gridDim.x)
         f.bodyResult[index] = 0.0;
@@ -502,6 +514,34 @@ __global__ void clearForcesKernel(GpuForceArrays f)
         *f.bodyMaxDepth = 0.0;
         *f.bodyContactFz = 0.0;
     }
+}
+
+__global__ void accumulateBodyRegimeKernel(GpuForceArrays f,
+                                           bool accumulateInterval)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int count = f.bodyCount * f.componentCount;
+    if (index >= count) return;
+    const int state = f.bodyRegimeState[index];
+    if ((state & 1) == 0) return;
+    const bool slidingYield = (state & 2) != 0;
+    const bool twistingYield = (state & 4) != 0;
+    const int body = index / f.componentCount;
+    const int regimeBase = body * kGpuBodyRegimeCounterCount;
+    const int primary = twistingYield ? 3 : (slidingYield ? 2 : 1);
+    atomicAdd(&f.bodyRegimeInstant[regimeBase], 1ull);
+    atomicAdd(&f.bodyRegimeInstant[regimeBase + primary], 1ull);
+    if (slidingYield) atomicAdd(&f.bodyRegimeInstant[regimeBase + 4], 1ull);
+    if (twistingYield) atomicAdd(&f.bodyRegimeInstant[regimeBase + 5], 1ull);
+    if (slidingYield && twistingYield)
+        atomicAdd(&f.bodyRegimeInstant[regimeBase + 6], 1ull);
+    if (!accumulateInterval) return;
+    atomicAdd(&f.bodyRegimeInterval[regimeBase], 1ull);
+    atomicAdd(&f.bodyRegimeInterval[regimeBase + primary], 1ull);
+    if (slidingYield) atomicAdd(&f.bodyRegimeInterval[regimeBase + 4], 1ull);
+    if (twistingYield) atomicAdd(&f.bodyRegimeInterval[regimeBase + 5], 1ull);
+    if (slidingYield && twistingYield)
+        atomicAdd(&f.bodyRegimeInterval[regimeBase + 6], 1ull);
 }
 
 __device__ void addComponents(double* destination, int base, DVec3 force, DVec3 torque)
@@ -795,8 +835,11 @@ __device__ int advanceBodyManifoldHistory(
     const GpuBodyStateArrays& bodies,
     GpuContactHistory history, GpuForceArrays forces,
     const GpuMechanicalParams& mech, int component, int body, int step,
-    DVec3 normal, DVec3 circleCenter, double distance)
+    DVec3 normal, DVec3 circleCenter, double distance,
+    bool* slidingYield, bool* twistingYield)
 {
+    *slidingYield = false;
+    *twistingYield = false;
     const int particle = components.owner[component];
     const std::uint64_t key = static_cast<std::uint64_t>(body + 1);
     const int slot = acquireHistorySlot(
@@ -858,7 +901,8 @@ __device__ int advanceBodyManifoldHistory(
         tangentialVelocity, kS, cS, mech.dt,
         transportTangentHistory(
             historyLoad(history.bodyValues, slot, 1), normal),
-        mech.mu * norm(normalForce), history.bodyValues, slot, 1, true);
+        mech.mu * norm(normalForce), history.bodyValues, slot, 1, true,
+        slidingYield);
 
     const DVec3 relativeOmega = sub(omegaBody, midpointOmegaParticle);
     const DVec3 twistRate =
@@ -873,7 +917,7 @@ __device__ int advanceBodyManifoldHistory(
         transportAxialHistory(
             historyLoad(history.bodyValues, slot, 2), normal),
         mech.mu * mech.muT * momentScale,
-        history.bodyValues, slot, 2, true);
+        history.bodyValues, slot, 2, true, twistingYield);
     limitedHistoryResponse(
         rollRate, kR, cR, mech.dt,
         transportTangentHistory(
@@ -1115,11 +1159,19 @@ __global__ void computeContactsKernel(GpuParticleArrays p,
             const DVec3 manifoldCircleCenter =
                 mul(weightedCircleCenter, 1.0 / totalAreaScale);
             const double manifoldDistance = weightedDistance / totalAreaScale;
+            bool slidingYield = false;
+            bool twistingYield = false;
             const int historySlot = advanceBodyManifoldHistory(
                 p, components, bodies, history, forces, bodyMech,
                 component, body, step, manifoldNormal,
-                manifoldCircleCenter, manifoldDistance);
+                manifoldCircleCenter, manifoldDistance,
+                &slidingYield, &twistingYield);
             if (historySlot < 0) continue;
+
+            const int regimeState = 1 | (slidingYield ? 2 : 0)
+                | (twistingYield ? 4 : 0);
+            forces.bodyRegimeState[
+                body * forces.componentCount + component] = regimeState;
 
             GpuMechanicalParams readOnlyBodyMech = bodyMech;
             readOnlyBodyMech.dt = 0.0;
@@ -1206,13 +1258,16 @@ void gpuFreeContactHistory(GpuContactHistory& h)
     h = GpuContactHistory{};
 }
 
-void gpuAllocateForces(GpuForceArrays& f, int particleCount, int bodyCount,
+void gpuAllocateForces(GpuForceArrays& f, int particleCount,
+                       int componentCount, int bodyCount,
                        bool keepBodyParticle, bool keepBodyDetail)
 {
-    if (particleCount <= 0 || bodyCount < 0) {
-        throw std::runtime_error("invalid particle/body count for CUDA force allocation");
+    if (particleCount <= 0 || componentCount <= 0 || bodyCount < 0) {
+        throw std::runtime_error(
+            "invalid particle/component/body count for CUDA force allocation");
     }
     f.particleCount = particleCount;
+    f.componentCount = componentCount;
     f.bodyCount = bodyCount;
     const std::size_t kernelLimit = static_cast<std::size_t>(INT_MAX);
     const std::size_t particle6 = checkedProduct(
@@ -1241,6 +1296,33 @@ void gpuAllocateForces(GpuForceArrays& f, int particleCount, int bodyCount,
         allocateDouble(f.bodyDetail,
                        count,
                        "cudaMalloc(body contact details)");
+    }
+    if (bodyCount > 0) {
+        const std::size_t count = checkedProduct(
+            static_cast<std::size_t>(bodyCount),
+            static_cast<std::size_t>(kGpuBodyRegimeCounterCount), kernelLimit,
+            "body regime counter array");
+        const std::size_t bodyComponents = checkedProduct(
+            static_cast<std::size_t>(bodyCount),
+            static_cast<std::size_t>(componentCount), kernelLimit,
+            "body regime state array");
+        allocateInt(f.bodyRegimeState, bodyComponents,
+                    "cudaMalloc(body regime state)");
+        checkCuda(cudaMalloc(&f.bodyRegimeInstant,
+                             sizeof(unsigned long long) * count),
+                  "cudaMalloc(body regime instantaneous counters)");
+        checkCuda(cudaMalloc(&f.bodyRegimeInterval,
+                             sizeof(unsigned long long) * count),
+                  "cudaMalloc(body regime interval counters)");
+        checkCuda(cudaMemset(f.bodyRegimeInstant, 0,
+                             sizeof(unsigned long long) * count),
+                  "initialize body regime instantaneous counters");
+        checkCuda(cudaMemset(f.bodyRegimeState, 0,
+                             sizeof(int) * bodyComponents),
+                  "initialize body regime state");
+        checkCuda(cudaMemset(f.bodyRegimeInterval, 0,
+                             sizeof(unsigned long long) * count),
+                  "initialize body regime interval counters");
     }
     const std::size_t body6 = checkedProduct(
         static_cast<std::size_t>(bodyCount), 6, kernelLimit,
@@ -1276,6 +1358,9 @@ void gpuFreeForces(GpuForceArrays& f)
     cudaFree(f.bodyHistoryHighWater);
     cudaFree(f.bodyMaxDepth);
     cudaFree(f.bodyContactFz);
+    cudaFree(f.bodyRegimeState);
+    cudaFree(f.bodyRegimeInstant);
+    cudaFree(f.bodyRegimeInterval);
     f = GpuForceArrays{};
 }
 
@@ -1366,4 +1451,10 @@ void gpuComputeContacts(const GpuParticleArrays& particles,
         particles, components, particleGrid, walls, bodies, triangles, triangleGrid,
         history, forces, particleMech, bodyMech, wallMech, stepIndex);
     checkCuda(cudaGetLastError(), "computeContactsKernel");
+    if (forces.bodyCount > 0) {
+        const int count = forces.bodyCount * forces.componentCount;
+        accumulateBodyRegimeKernel<<<blocks(count), 256>>>(
+            forces, bodyMech.dt > 0.0);
+        checkCuda(cudaGetLastError(), "accumulateBodyRegimeKernel");
+    }
 }
