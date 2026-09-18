@@ -503,6 +503,17 @@ __global__ void clearForcesKernel(GpuForceArrays f)
     for (int index = i; index < bodyComponentCount; index += blockDim.x * gridDim.x) {
         f.bodyRegimeState[index] = 0;
     }
+    const int bodyMicrostateStateCount =
+        bodyComponentCount * kGpuBodyMicrostateValueCount;
+    for (int index = i; index < bodyMicrostateStateCount;
+         index += blockDim.x * gridDim.x) {
+        f.bodyMicrostateState[index] = 0.0;
+    }
+    const int bodyMicrostateCount = f.bodyCount * kGpuBodyMicrostateValueCount;
+    for (int index = i; index < bodyMicrostateCount;
+         index += blockDim.x * gridDim.x) {
+        f.bodyMicrostateInstant[index] = 0.0;
+    }
     const int body6 = f.bodyCount * 6;
     for (int index = i; index < body6; index += blockDim.x * gridDim.x)
         f.bodyResult[index] = 0.0;
@@ -535,6 +546,12 @@ __global__ void accumulateBodyRegimeKernel(GpuForceArrays f,
     if (twistingYield) atomicAdd(&f.bodyRegimeInstant[regimeBase + 5], 1ull);
     if (slidingYield && twistingYield)
         atomicAdd(&f.bodyRegimeInstant[regimeBase + 6], 1ull);
+    const int stateBase = index * kGpuBodyMicrostateValueCount;
+    const int aggregateBase = body * kGpuBodyMicrostateValueCount;
+    for (int field = 0; field < kGpuBodyMicrostateValueCount; ++field) {
+        atomicAdd(&f.bodyMicrostateInstant[aggregateBase + field],
+                  f.bodyMicrostateState[stateBase + field]);
+    }
     if (!accumulateInterval) return;
     atomicAdd(&f.bodyRegimeInterval[regimeBase], 1ull);
     atomicAdd(&f.bodyRegimeInterval[regimeBase + primary], 1ull);
@@ -542,6 +559,11 @@ __global__ void accumulateBodyRegimeKernel(GpuForceArrays f,
     if (twistingYield) atomicAdd(&f.bodyRegimeInterval[regimeBase + 5], 1ull);
     if (slidingYield && twistingYield)
         atomicAdd(&f.bodyRegimeInterval[regimeBase + 6], 1ull);
+
+    for (int field = 0; field < kGpuBodyMicrostateValueCount; ++field) {
+        const double value = f.bodyMicrostateState[stateBase + field];
+        atomicAdd(&f.bodyMicrostateInterval[aggregateBase + field], value);
+    }
 }
 
 __device__ void addComponents(double* destination, int base, DVec3 force, DVec3 torque)
@@ -1198,6 +1220,141 @@ __global__ void computeContactsKernel(GpuParticleArrays p,
     p.tx[i] = totalTorque.x; p.ty[i] = totalTorque.y; p.tz[i] = totalTorque.z;
 }
 
+// This observer deliberately runs after computeContactsKernel.  Keeping all
+// observation arithmetic out of the constitutive kernel preserves the exact
+// force/history instruction path while reading its completed state.
+__global__ void observeBodyMicrostateKernel(
+    const GpuParticleArrays p, const GpuComponentArrays components,
+    const GpuBodyStateArrays bodies, const GpuTriangleArrays triangles,
+    const GpuTriangleGrid triangleGrid, const GpuContactHistory history,
+    GpuForceArrays forces, const GpuMechanicalParams mech, int step)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int count = forces.bodyCount * forces.componentCount;
+    if (index >= count || (forces.bodyRegimeState[index] & 1) == 0) return;
+    const int body = index / forces.componentCount;
+    const int component = index - body * forces.componentCount;
+    const DVec3 position = loadComponentPosition(components, component);
+    const int ix = static_cast<int>(floor(position.x * triangleGrid.invMeshSize));
+    const int iy = static_cast<int>(floor(position.y * triangleGrid.invMeshSize));
+    const int iz = static_cast<int>(floor(position.z * triangleGrid.invMeshSize));
+    const std::uint64_t gridKey = packCell(ix, iy, iz);
+    const int begin = lowerBound(
+        triangleGrid.sortedCellKey, triangleGrid.entryCount, gridKey);
+    const int end = upperBound(
+        triangleGrid.sortedCellKey, triangleGrid.entryCount, gridKey);
+
+    double totalAreaScale = 0.0;
+    DVec3 weightedNormal = makeVec(0.0, 0.0, 0.0);
+    DVec3 weightedCircleCenter = makeVec(0.0, 0.0, 0.0);
+    double weightedDistance = 0.0;
+    for (int entry = begin; entry < end; ++entry) {
+        const int triangle = triangleGrid.sortedTriangleId[entry];
+        if (triangles.bodyId[triangle] != body) continue;
+        const double areaScale = bodyTriangleAreaScale(
+            components, triangles, component, triangle);
+        if (areaScale <= 0.0) continue;
+        const DVec3 outward = makeVec(
+            triangles.wnx[triangle], triangles.wny[triangle],
+            triangles.wnz[triangle]);
+        const DVec3 a = makeVec(
+            triangles.wx2[triangle], triangles.wy2[triangle],
+            triangles.wz2[triangle]);
+        const double distance = dot(outward, sub(position, a));
+        const DVec3 circleCenter = sub(position, mul(outward, distance));
+        totalAreaScale += areaScale;
+        weightedNormal = add(weightedNormal, mul(outward, -areaScale));
+        weightedCircleCenter = add(
+            weightedCircleCenter, mul(circleCenter, areaScale));
+        weightedDistance += distance * areaScale;
+    }
+    if (totalAreaScale <= 0.0) return;
+
+    const std::uint64_t historyKey = static_cast<std::uint64_t>(body + 1);
+    const int historyBegin = component * kGpuBodyHistorySlots;
+    int historySlot = -1;
+    for (int offset = 0; offset < kGpuBodyHistorySlots; ++offset) {
+        const int slot = historyBegin + offset;
+        if (history.bodyKeys[slot] == historyKey
+            && history.bodyLastSeen[slot] == step) {
+            historySlot = slot;
+            break;
+        }
+    }
+    if (historySlot < 0) return;
+
+    const DVec3 normal = normalized(weightedNormal);
+    const DVec3 circleCenter = mul(
+        weightedCircleCenter, 1.0 / totalAreaScale);
+    const double distance = weightedDistance / totalAreaScale;
+    const int particle = components.owner[component];
+    const DVec3 center = makeVec(
+        bodies.cx[body], bodies.cy[body], bodies.cz[body]);
+    const DVec3 arm = sub(circleCenter, center);
+    const DVec3 omegaBody = bodyAngularWorld(bodies, body);
+    const DVec3 bodyVelocity = add(
+        makeVec(bodies.vx[body], bodies.vy[body], bodies.vz[body]),
+        cross(omegaBody, arm));
+    const DVec3 relativeVelocity = sub(
+        bodyVelocity, loadComponentVelocity(components, component));
+    const double reducedMass = p.mass[particle];
+    const double logN = log(mech.epsN);
+    const double cN = -2.0 * logN * sqrt(
+        mech.kN * reducedMass / (kPi*kPi + logN*logN));
+    const double radius = components.radius[component];
+    const double betaRadiusSquared = mech.beta * radius * mech.beta * radius;
+    const double depth = radius - distance;
+    DVec3 normalForce = add(
+        mul(normal, -mech.kN * depth),
+        mul(normal, cN * dot(relativeVelocity, normal)));
+    normalForce = add(
+        normalForce, mul(normal, mech.cohesion * 4.0 * betaRadiusSquared));
+    const double normalForceNorm = norm(normalForce);
+    const double momentScale = mech.beta * radius * normalForceNorm;
+    const double tangentLimit = mech.mu * normalForceNorm;
+    const double twistLimit = mech.mu * mech.muT * momentScale;
+    const DVec3 tangentHistory = historyLoad(
+        history.bodyValues, historySlot, 1);
+    const DVec3 twistHistory = historyLoad(
+        history.bodyValues, historySlot, 2);
+    const DVec3 bodyAxisZ = rotateIv(
+        bodies.qw[body], bodies.qx[body], bodies.qy[body], bodies.qz[body],
+        makeVec(0.0, 0.0, 1.0));
+    const DVec3 radialArm = sub(arm, mul(bodyAxisZ, dot(arm, bodyAxisZ)));
+    const double tangentUtilization = tangentLimit > 1.0e-30
+        ? fmin(1.0, norm(tangentHistory) / tangentLimit) : 0.0;
+    const double twistUtilization = twistLimit > 1.0e-30
+        ? fmin(1.0, norm(twistHistory) / twistLimit) : 0.0;
+    const DVec3 bodyTwistHistory = mul(twistHistory, -totalAreaScale);
+    const DVec3 bodyNormalLoad = mul(normalForce, -totalAreaScale);
+    const DVec3 bodyTangentHistory = mul(tangentHistory, -totalAreaScale);
+    const DVec3 bodyTangentHistoryTorque = cross(arm, bodyTangentHistory);
+    double* microstate = &forces.bodyMicrostateState[
+        index * kGpuBodyMicrostateValueCount];
+    microstate[0] = normalForceNorm * totalAreaScale;
+    microstate[1] = normalForceNorm * radius * totalAreaScale;
+    microstate[2] = normalForceNorm * norm(radialArm) * totalAreaScale;
+    microstate[3] = bodyTwistHistory.x;
+    microstate[4] = bodyTwistHistory.y;
+    microstate[5] = bodyTwistHistory.z;
+    microstate[6] = norm(twistHistory) * totalAreaScale;
+    microstate[7] = twistLimit * totalAreaScale;
+    microstate[8] = norm(tangentHistory) * totalAreaScale;
+    microstate[9] = tangentLimit * totalAreaScale;
+    microstate[10] = twistUtilization * totalAreaScale;
+    microstate[11] = tangentUtilization * totalAreaScale;
+    microstate[12] = totalAreaScale;
+    microstate[13] = bodyNormalLoad.x;
+    microstate[14] = bodyNormalLoad.y;
+    microstate[15] = bodyNormalLoad.z;
+    microstate[16] = bodyTangentHistory.x;
+    microstate[17] = bodyTangentHistory.y;
+    microstate[18] = bodyTangentHistory.z;
+    microstate[19] = bodyTangentHistoryTorque.x;
+    microstate[20] = bodyTangentHistoryTorque.y;
+    microstate[21] = bodyTangentHistoryTorque.z;
+}
+
 int blocks(int n) { return (n + 255) / 256; }
 
 } // namespace
@@ -1308,6 +1465,20 @@ void gpuAllocateForces(GpuForceArrays& f, int particleCount,
             "body regime state array");
         allocateInt(f.bodyRegimeState, bodyComponents,
                     "cudaMalloc(body regime state)");
+        const std::size_t microstateStateCount = checkedProduct(
+            bodyComponents,
+            static_cast<std::size_t>(kGpuBodyMicrostateValueCount), kernelLimit,
+            "body microstate component array");
+        const std::size_t microstateCount = checkedProduct(
+            static_cast<std::size_t>(bodyCount),
+            static_cast<std::size_t>(kGpuBodyMicrostateValueCount), kernelLimit,
+            "body microstate aggregate array");
+        allocateDouble(f.bodyMicrostateState, microstateStateCount,
+                       "cudaMalloc(body microstate component values)");
+        allocateDouble(f.bodyMicrostateInstant, microstateCount,
+                       "cudaMalloc(body microstate instantaneous values)");
+        allocateDouble(f.bodyMicrostateInterval, microstateCount,
+                       "cudaMalloc(body microstate interval values)");
         checkCuda(cudaMalloc(&f.bodyRegimeInstant,
                              sizeof(unsigned long long) * count),
                   "cudaMalloc(body regime instantaneous counters)");
@@ -1323,6 +1494,15 @@ void gpuAllocateForces(GpuForceArrays& f, int particleCount,
         checkCuda(cudaMemset(f.bodyRegimeInterval, 0,
                              sizeof(unsigned long long) * count),
                   "initialize body regime interval counters");
+        checkCuda(cudaMemset(f.bodyMicrostateState, 0,
+                             sizeof(double) * microstateStateCount),
+                  "initialize body microstate component values");
+        checkCuda(cudaMemset(f.bodyMicrostateInstant, 0,
+                             sizeof(double) * microstateCount),
+                  "initialize body microstate instantaneous values");
+        checkCuda(cudaMemset(f.bodyMicrostateInterval, 0,
+                             sizeof(double) * microstateCount),
+                  "initialize body microstate interval values");
     }
     const std::size_t body6 = checkedProduct(
         static_cast<std::size_t>(bodyCount), 6, kernelLimit,
@@ -1361,6 +1541,9 @@ void gpuFreeForces(GpuForceArrays& f)
     cudaFree(f.bodyRegimeState);
     cudaFree(f.bodyRegimeInstant);
     cudaFree(f.bodyRegimeInterval);
+    cudaFree(f.bodyMicrostateState);
+    cudaFree(f.bodyMicrostateInstant);
+    cudaFree(f.bodyMicrostateInterval);
     f = GpuForceArrays{};
 }
 
@@ -1453,6 +1636,10 @@ void gpuComputeContacts(const GpuParticleArrays& particles,
     checkCuda(cudaGetLastError(), "computeContactsKernel");
     if (forces.bodyCount > 0) {
         const int count = forces.bodyCount * forces.componentCount;
+        observeBodyMicrostateKernel<<<blocks(count), 256>>>(
+            particles, components, bodies, triangles, triangleGrid, history,
+            forces, bodyMech, stepIndex);
+        checkCuda(cudaGetLastError(), "observeBodyMicrostateKernel");
         accumulateBodyRegimeKernel<<<blocks(count), 256>>>(
             forces, bodyMech.dt > 0.0);
         checkCuda(cudaGetLastError(), "accumulateBodyRegimeKernel");

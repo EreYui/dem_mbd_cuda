@@ -104,6 +104,56 @@ void writeBodyRegimeRows(std::ofstream& output, const CudaStepStats& stats,
     }
 }
 
+constexpr std::array<const char*, 22> kBodyMicrostateNames = {
+    "normal_load_sum_n",
+    "normal_load_weighted_particle_radius_n_m",
+    "normal_load_weighted_arm_radius_n_m",
+    "twist_history_world_x_nm",
+    "twist_history_world_y_nm",
+    "twist_history_world_z_nm",
+    "twist_history_norm_sum_nm",
+    "twist_limit_sum_nm",
+    "tangent_history_norm_sum_n",
+    "tangent_limit_sum_n",
+    "twist_utilization_area_sum",
+    "tangent_utilization_area_sum",
+    "contact_area_scale_sum",
+    "normal_load_world_x_n",
+    "normal_load_world_y_n",
+    "normal_load_world_z_n",
+    "tangent_history_world_x_n",
+    "tangent_history_world_y_n",
+    "tangent_history_world_z_n",
+    "tangent_history_arm_torque_world_x_nm",
+    "tangent_history_arm_torque_world_y_nm",
+    "tangent_history_arm_torque_world_z_nm",
+};
+
+void writeBodyMicrostateHeader(std::ofstream& output) {
+    output << "schema_version,end_step,end_time_s,body_id,window_native_steps";
+    for (const auto* name : kBodyMicrostateNames) output << ",instant_" << name;
+    for (const auto* name : kBodyMicrostateNames) output << ",window_" << name;
+    output << '\n' << std::setprecision(17);
+}
+
+void writeBodyMicrostateRows(std::ofstream& output, const CudaStepStats& stats,
+                             int endStep, double endTime) {
+    if (stats.bodyMicrostateInstant.size()
+        != stats.bodyMicrostateInterval.size()) {
+        throw std::runtime_error("native PT microstate body dimensions differ");
+    }
+    for (std::size_t body = 0; body < stats.bodyMicrostateInstant.size(); ++body) {
+        output << "native_pt_microstate_v1," << endStep << ',' << endTime << ','
+               << body << ',' << stats.bodyRegimeIntervalNativeSteps;
+        for (const auto value : stats.bodyMicrostateInstant[body])
+            output << ',' << value;
+        for (const auto value : stats.bodyMicrostateInterval[body])
+            output << ',' << value;
+        output << '\n';
+    }
+    if (!output) throw std::runtime_error("failed to write native PT microstate");
+}
+
 void enqueueCudaFrame(AsyncOutputWriter* writer, CudaDemSolver& solver,
                       BODYSET* bodies, double** bodyForces, double** bodyImpulses,
                       int step, double time) {
@@ -269,11 +319,23 @@ void Simulation::IntegrateDemMultiBody() {
             regimeOutputPath);
     }
     writeBodyRegimeHeader(regimeOutput);
+    const auto microstateOutputPath = file_utils::prepareOutputFile(
+        "OutputFile/native_body_contact_microstate.csv",
+        "native PT contact microstate");
+    std::ofstream microstateOutput(microstateOutputPath);
+    if (!microstateOutput.is_open()) {
+        throw file_utils::pathError(
+            "Cannot open / 无法打开", "native PT contact microstate",
+            microstateOutputPath);
+    }
+    writeBodyMicrostateHeader(microstateOutput);
 
     std::cout << "CUDA DEM-MBD solver: " << CudaDeviceDescription() << std::endl;
     solver.computeForces(0.0, &bodyset, bodyForces, true);
     writeBodyRegimeRows(regimeOutput, solver.stepStats(), ode.StartStep,
                         ode.StartStep * ode.StepSize);
+    writeBodyMicrostateRows(microstateOutput, solver.stepStats(), ode.StartStep,
+                            ode.StartStep * ode.StepSize);
     std::cout << "Persistent CUDA memory = "
               << solver.deviceMemoryBytes() / (1024.0 * 1024.0) << " MiB" << std::endl;
     bodyImpulseStorage.clear();
@@ -369,6 +431,8 @@ void Simulation::IntegrateDemMultiBody() {
             bodyImpulseStorage.clear();
             const auto stats = solver.stepStats();
             writeBodyRegimeRows(regimeOutput, stats, step + 1, nextTime);
+            writeBodyMicrostateRows(
+                microstateOutput, stats, step + 1, nextTime);
             std::cout << "  " << step + 1 << "/" << ode.EndStep
                       << ", particle/triangle grid = "
                       << solver.particleGridEntryCount() << "/"

@@ -30,6 +30,10 @@ struct CudaStepStats {
     std::vector<std::array<std::uint64_t, 7>> bodyRegimeInstant;
     std::vector<std::array<std::uint64_t, 7>> bodyRegimeInterval;
     std::uint64_t bodyRegimeIntervalNativeSteps = 0;
+    // Read-only PT component-manifold microstate aggregates.  These values
+    // are accumulated after the constitutive update and never feed forces.
+    std::vector<std::array<double, 22>> bodyMicrostateInstant;
+    std::vector<std::array<double, 22>> bodyMicrostateInterval;
 };
 
 // Persistent CUDA DEM solver. Particle state, contact history, spatial grids,

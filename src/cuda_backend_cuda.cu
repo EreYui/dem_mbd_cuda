@@ -453,6 +453,32 @@ void CudaDemSolver::computeForces(double, BODYSET* bodyset, double** bodyForces,
                              sizeof(unsigned long long) * count),
                   "reset body regime interval counters");
         impl_->bodyRegimeIntervalNativeSteps = 0;
+
+        const std::size_t microstateCount =
+            static_cast<std::size_t>(impl_->bodies.n)
+            * kGpuBodyMicrostateValueCount;
+        std::vector<double> microstateInstant(microstateCount);
+        std::vector<double> microstateInterval(microstateCount);
+        download(microstateInstant.data(), impl_->forces.bodyMicrostateInstant,
+                 microstateCount,
+                 "download body microstate instantaneous values");
+        download(microstateInterval.data(), impl_->forces.bodyMicrostateInterval,
+                 microstateCount, "download body microstate interval values");
+        stats.bodyMicrostateInstant.resize(impl_->bodies.n);
+        stats.bodyMicrostateInterval.resize(impl_->bodies.n);
+        for (int body = 0; body < impl_->bodies.n; ++body) {
+            for (int field = 0; field < kGpuBodyMicrostateValueCount; ++field) {
+                const std::size_t index = static_cast<std::size_t>(body)
+                    * kGpuBodyMicrostateValueCount + field;
+                stats.bodyMicrostateInstant[body][field] =
+                    microstateInstant[index];
+                stats.bodyMicrostateInterval[body][field] =
+                    microstateInterval[index];
+            }
+        }
+        checkCuda(cudaMemset(impl_->forces.bodyMicrostateInterval, 0,
+                             sizeof(double) * microstateCount),
+                  "reset body microstate interval values");
     }
     download(&stats.particleHistoryOverflows,
              impl_->forces.particleHistoryOverflowCount, 1,

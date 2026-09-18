@@ -13,6 +13,7 @@ constexpr int kGpuWallHistorySlots = 16;
 constexpr int kGpuBodyHistorySlots = 64;
 constexpr int kGpuMaxCellsPerTriangle = 125;
 constexpr int kGpuBodyRegimeCounterCount = 7;
+constexpr int kGpuBodyMicrostateValueCount = 22;
 
 __host__ __device__ constexpr bool gpuElasticTrialBranchYielded(
     double elasticTrialNorm, double limit)
@@ -72,6 +73,9 @@ struct GpuForceArrays {
     int* bodyRegimeState = nullptr; // [body][component], active/slide/twist bits
     unsigned long long* bodyRegimeInstant = nullptr;  // [body][7]
     unsigned long long* bodyRegimeInterval = nullptr; // [body][7]
+    double* bodyMicrostateState = nullptr;    // [body][component][22]
+    double* bodyMicrostateInstant = nullptr;  // [body][22]
+    double* bodyMicrostateInterval = nullptr; // [body][22]
 };
 
 struct GpuTriangleGrid {
